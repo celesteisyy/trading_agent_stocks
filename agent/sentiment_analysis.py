@@ -11,8 +11,6 @@ from nltk.sentiment.vader import SentimentIntensityAnalyzer
 from transformers import pipeline, AutoTokenizer
 import tensorflow as tf
 from data_loader import DataLoader
-import warnings
-warnings.filterwarnings("ignore")
 
 
 class SentimentAnalyzer:
