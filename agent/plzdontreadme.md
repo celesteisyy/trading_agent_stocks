@@ -4,7 +4,8 @@ A Python project template for downloading and processing financial time series (
 
 ## Repository Structure
 
-final/
+```
+agent/
 ├── config.py # Load environment variables and API keys
 ├── data_loader.py # Download raw data from various sources
 ├── MAINTAINING
@@ -14,6 +15,7 @@ final/
 ├── MAINTAINING
 ├── MAINTAINING
 └── main.py # Entry point to run the full pipeline
+```
 
 ## Prerequisites
 
