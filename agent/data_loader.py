@@ -94,11 +94,12 @@ class DataLoader:
             auto_adjust=True,
             threads=True,
         )
-
+    
+"""commented out because we already have load_defi_prices()
     def load_crypto_prices(self, symbols: List[str]) -> pd.DataFrame:
         """
-        Download major cryptocurrency prices (e.g., BTC-USD, ETH-USD).
-        Input symbols WITHOUT the '-USD' suffix.
+##        Download major cryptocurrency prices (e.g., BTC-USD, ETH-USD).
+##       Input symbols WITHOUT the '-USD' suffix.
         """
         tickers = [f"{sym}-USD" for sym in symbols]
         return yf.download(
@@ -110,57 +111,53 @@ class DataLoader:
             auto_adjust=True,
             threads=True,
         )
+"""
 
-    def load_defi_prices(self, coin_ids: List[str], vs_symbol: str = 'USDT', ccxt_exchanges: List[str] = ['binanceus', 'kraken', 'coinbasepro'],timeframe: str = '1d') -> pd.DataFrame:
+    def load_defi_prices(self,coin_ids: List[str],vs_symbol: str = 'USDT',ccxt_exchanges: List[str] = ['kraken', 'coinbasepro', 'bitfinex'],timeframe: str = '1d') -> pd.DataFrame:
         """
-        Fetch closing prices for DeFi tokens with a two‑step fallback:
+        Fetch closing prices for DeFi tokens, trying multiple quote currencies:
 
-        1) Try public OHLCV endpoints on a list of CCXT exchanges.
-           (use binanceus instead of binance because of IP restrictions)
-        2) If all CCXT calls fail, fall back to yfinance using '<COIN>-USD' tickers.
+        1) For each CCXT exchange in order:
+        • Try market SYMBOL/VS (e.g. UNI/USDT)
+        • If that fails, try SYMBOL/USD
+        • Move on as soon as one quote works per coin
+        2) If no exchange yields any data for any coin, return an empty DataFrame.
+
+        Returns:
+            DataFrame indexed by timestamp, one column per token.
         """
-        # Step 1: Attempt CCXT exchanges in order
+        # Step 1: CCXT path
         for exchange_id in ccxt_exchanges:
             try:
-                exchange_class = getattr(ccxt, exchange_id)
-                exchange = exchange_class()
+                exchange = getattr(ccxt, exchange_id)()
                 since_ms = exchange.parse8601(f"{self.start_date}T00:00:00Z")
-                frames: Dict[str, pd.Series] = {}
+                result: Dict[str, pd.Series] = {}
+
                 for coin in coin_ids:
-                    market_symbol = f"{coin.upper()}/{vs_symbol}"
-                    ohlcv = exchange.fetch_ohlcv(market_symbol, timeframe, since_ms)
-                    df = pd.DataFrame(ohlcv, columns=[
-                        'timestamp_ms', 'open', 'high', 'low', 'close', 'volume'
-                    ])
-                    df['timestamp'] = pd.to_datetime(df['timestamp_ms'], unit='ms')
-                    df.set_index('timestamp', inplace=True)
-                    frames[coin] = df['close']
-                return pd.DataFrame(frames)
+                    for quote in (vs_symbol.upper(), 'USD'):
+                        symbol = f"{coin.upper()}/{quote}"
+                        try:
+                            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since_ms)
+                            df = pd.DataFrame(
+                                ohlcv,
+                                columns=['ts', 'open', 'high', 'low', 'close', 'volume']
+                            )
+                            df['ts'] = pd.to_datetime(df['ts'], unit='ms')
+                            df.set_index('ts', inplace=True)
+                            result[coin] = df['close']
+                            break  # stop trying quotes for this coin
+                        except Exception:
+                            continue  # try next quote
+
+                if result:
+                    return pd.DataFrame(result)
+
             except Exception:
+                # this exchange failed entirely → try next exchange
                 continue
 
-        # Step 2: Fallback to yfinance
-        frames: Dict[str, pd.Series] = {}
-        for coin in coin_ids:
-            ticker = f"{coin.upper()}-USD"
-            try:
-                # Pause between calls to avoid Yahoo rate‑limit
-                time.sleep(1)  
-                yf_ticker = yf.Ticker(ticker)
-                hist = yf_ticker.history(
-                    start=self.start_date,
-                    end=self.end_date,
-                    interval=self.interval,
-                    auto_adjust=True,
-                    progress=False
-                )
-                frames[coin] = hist['Close'].rename(coin)
-            except Exception:
-                frames[coin] = pd.Series(dtype=float)
-
-        return pd.DataFrame(frames)
-
-
+        # Step 2: if we fall through all exchanges without any data
+        return pd.DataFrame()
 
     def load_macro_series(self, series_ids: List[str]) -> pd.DataFrame:
         """
