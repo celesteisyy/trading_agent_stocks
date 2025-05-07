@@ -6,8 +6,6 @@ import requests
 from typing import List, Dict, Optional
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
-
-# 新增
 import praw
 from datetime import datetime
 
@@ -135,8 +133,6 @@ class DataLoader:
             frames.append(df)
         return pd.concat(frames, axis=1) if frames else pd.DataFrame()
 
-    # —— 新增 Reddit 方法 —— #
-
     def load_reddit_latest(self, subreddit: str, limit: int = 100) -> pd.DataFrame:
         """
         Fetch the latest `limit` posts from a subreddit.
@@ -146,7 +142,7 @@ class DataLoader:
             records.append({
                 "id":           post.id,
                 "title":        post.title,
-                "created_utc":  datetime.utcfromtimestamp(post.created_utc),
+                "created_utc":  datetime.fromtimestamp(post.created_utc),
                 "score":        post.score,
                 "num_comments": post.num_comments,
                 "url":          post.url,
