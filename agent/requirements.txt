@@ -15,6 +15,17 @@ praw>=7.5.0
 # Crypto exchange OHLCV
 ccxt>=3.0.0
 
+# NLP & sentiment analysis
+nltk>=3.6.0
+vaderSentiment>=3.3.2
+transformers>=4.0.0
+torch>=1.7.1
+sentencepiece>=0.1.95
+huggingface_hub>=0.13.4
+
+# Machine learning frameworks
+tensorflow>=2.9.0
+
 # (Optional) For model training & evaluation
 scikit-learn>=1.0.0
 matplotlib>=3.5.0

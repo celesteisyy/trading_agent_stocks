@@ -94,24 +94,6 @@ class DataLoader:
             auto_adjust=True,
             threads=True,
         )
-    
-"""commented out because we already have load_defi_prices()
-    def load_crypto_prices(self, symbols: List[str]) -> pd.DataFrame:
-        """
-##        Download major cryptocurrency prices (e.g., BTC-USD, ETH-USD).
-##       Input symbols WITHOUT the '-USD' suffix.
-        """
-        tickers = [f"{sym}-USD" for sym in symbols]
-        return yf.download(
-            tickers,
-            start=self.start_date,
-            end=self.end_date,
-            interval=self.interval,
-            group_by='ticker',
-            auto_adjust=True,
-            threads=True,
-        )
-"""
 
     def load_defi_prices(self,coin_ids: List[str],vs_symbol: str = 'USDT',ccxt_exchanges: List[str] = ['kraken', 'coinbasepro', 'bitfinex'],timeframe: str = '1d') -> pd.DataFrame:
         """
