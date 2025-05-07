@@ -61,19 +61,35 @@ class DataLoader:
         )
 
     def load_stock_prices(self, tickers: List[str]) -> pd.DataFrame:
-        # ... unchanged ...
-        return yf.download(
-            tickers,
-            start=self.start_date,
-            end=self.end_date,
-            interval=self.interval,
-            group_by='ticker',
-            auto_adjust=True,
-            threads=True,
-        )
+            """
+            Download historical adjusted prices for equity tickers.
+            
+            Args:
+                tickers: List of stock ticker symbols
+                
+            Returns:
+                MultiIndex DataFrame: Outer='Ticker', Inner=['Open','High','Low','Close','Volume']
+            """
+            return yf.download(
+                tickers,
+                start=self.start_date,
+                end=self.end_date,
+                interval=self.interval,
+                group_by='ticker',
+                auto_adjust=True,
+                threads=True,
+            )
 
     def load_benchmark_indices(self, symbols: List[str]) -> pd.DataFrame:
-        # ... unchanged ...
+        """
+        Download benchmark index data (e.g., ^GSPC, ^RUI, ^RUT).
+        
+        Args:
+            symbols: List of index symbols
+            
+        Returns:
+            DataFrame with columns ['Open','High','Low','Close','Volume'] for each symbol
+        """
         return yf.download(
             symbols,
             start=self.start_date,
@@ -84,7 +100,15 @@ class DataLoader:
         )
 
     def load_crypto_prices(self, symbols: List[str]) -> pd.DataFrame:
-        # ... unchanged ...
+        """
+        Download major cryptocurrency prices (e.g., BTC-USD, ETH-USD).
+        
+        Args:
+            symbols: List of crypto symbols without '-USD'
+            
+        Returns:
+            Same structure as load_stock_prices
+        """
         tickers = [f"{sym}-USD" for sym in symbols]
         return yf.download(
             tickers,
@@ -97,40 +121,64 @@ class DataLoader:
         )
 
     def load_defi_prices(self, coin_ids: List[str], vs_currency: str = 'usd') -> pd.DataFrame:
-        # ... unchanged ...
+        """
+        Fetch historical price data for DeFi tokens via the CoinGecko API.
+        
+        Args:
+            coin_ids: List of CoinGecko identifiers (e.g., 'uniswap', 'aave')
+            vs_currency: Currency to get prices in (default: 'usd')
+            
+        Returns:
+            DataFrame indexed by timestamp with one column per token
+        """
         results = {}
         for coin in coin_ids:
             url = f"{self._COINGECKO_BASE_URL}/{coin}/market_chart"
             params = {'vs_currency': vs_currency, 'days': 'max'}
+            
             resp = requests.get(url, params=params)
             resp.raise_for_status()
             prices = resp.json().get('prices', [])
+            
             df = pd.DataFrame(prices, columns=['timestamp', coin])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             df.set_index('timestamp', inplace=True)
             results[coin] = df[coin]
+            
         return pd.DataFrame(results)
 
     def load_macro_series(self, series_ids: List[str]) -> pd.DataFrame:
-        # ... unchanged ...
+        """
+        Fetch macroeconomic time series from the FRED API.
+        Requires FRED_API_KEY set in fin580.env.
+        
+        Args:
+            series_ids: List of FRED series identifiers
+            
+        Returns:
+            DataFrame indexed by date with one column per series
+        """
         frames = []
         for series in series_ids:
             params = {
                 'series_id': series,
-                'api_key':   self.fred_api_key,
+                'api_key': self.fred_api_key,
                 'file_type': 'json',
                 'observation_start': self.start_date,
-                'observation_end':   self.end_date,
+                'observation_end': self.end_date,
             }
+            
             resp = requests.get(self._FRED_BASE_URL, params=params)
             resp.raise_for_status()
             obs = resp.json().get('observations', [])
+            
             df = pd.DataFrame(obs)[['date', 'value']]
-            df['date']  = pd.to_datetime(df['date'])
+            df['date'] = pd.to_datetime(df['date'])
             df['value'] = pd.to_numeric(df['value'], errors='coerce')
             df.set_index('date', inplace=True)
             df.rename(columns={'value': series}, inplace=True)
             frames.append(df)
+            
         return pd.concat(frames, axis=1) if frames else pd.DataFrame()
 
     def load_reddit_latest(self, subreddit: str, limit: int = 100) -> pd.DataFrame:

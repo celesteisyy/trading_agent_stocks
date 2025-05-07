@@ -1,0 +1,18 @@
+# Core data handling
+pandas>=1.2.0
+pandas-datareader>=0.10.0
+
+# Financial data
+yfinance>=0.2.4
+
+# HTTP & environment
+requests>=2.26.0
+python-dotenv>=0.20.0
+
+# Reddit API
+praw>=7.5.0
+psaw>=0.7.0
+
+# (Optional) For model training & evaluation
+scikit-learn>=1.0.0
+matplotlib>=3.5.0
