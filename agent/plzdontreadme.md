@@ -6,7 +6,7 @@ A Python project template for downloading and processing financial time series (
 
 ```
 agent/
-├── config.py # Load environment variables and API keys
+├── agent_config.py # Load environment variables and API keys
 ├── data_loader.py # Download raw data from various sources
 ├── MAINTAINING
 ├── MAINTAINING

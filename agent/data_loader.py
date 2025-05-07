@@ -1,5 +1,5 @@
 import os
-from dotenv import load_dotenv
+from dotenv import load_dotenv,find_dotenv
 import yfinance as yf
 import pandas as pd
 import requests
@@ -10,7 +10,8 @@ import praw
 from datetime import datetime
 
 # Load environment variables from fin580.env
-load_dotenv('fin580.env')
+env_path = find_dotenv("fin580.env", raise_error_if_not_found=True)
+load_dotenv(env_path)
 
 class DataLoader:
     """
