@@ -239,8 +239,6 @@ class DataLoader:
 
 # Example usage (for testing)
 if __name__ == "__main__":
-    import time
-
     loader = DataLoader(start_date="2020-01-01", end_date="2025-05-01")
 
     # use smallest sample as possible to avoid rate limit
@@ -249,7 +247,6 @@ if __name__ == "__main__":
     tests = {
         "Equity":      (loader.load_stock_prices,       [['AAPL']]),
         "Benchmark":   (loader.load_benchmark_indices, [['^GSPC']]),
-        "Crypto":      (loader.load_crypto_prices,      [['BTC']]),
         "DeFi":        (loader.load_defi_prices,        [['uniswap']]),
         "Macro":       (loader.load_macro_series,       [['GDP','UNRATE']]),
         "Tech+FinTech":(loader.load_stock_prices,       [tech_one + fin_one]),
