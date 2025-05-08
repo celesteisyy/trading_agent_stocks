@@ -130,7 +130,6 @@ class AnalysisAgent:
 
 
 if __name__ == '__main__':
-    """
     # Self-check / example usage
     from data_loader import DataLoader
 
@@ -149,25 +148,26 @@ if __name__ == '__main__':
     # Print head of indicators and signals for manual inspection
     print(agent.indicators[['sma_20','rsi_14','macd','macd_signal','bb_upper','bb_lower','atr_14']].dropna().head())
     print(signals.dropna().head())
-    """
+
     # this is what you may need if encounter YF rate limit while still need to test the system
-    dates = pd.date_range('2021-01-01', periods=200, freq='B')
+#    dates = pd.date_range('2021-01-01', periods=200, freq='B')
 
     # 2) Simulate a random‑walk close price around 100
-    np.random.seed(42)
-    close = 100 + np.cumsum(np.random.randn(len(dates)))
+#    np.random.seed(42)
+#    close = 100 + np.cumsum(np.random.randn(len(dates)))
 
     # 3) Build O/H/L/C/Volume columns
-    df = pd.DataFrame({
-        'Open':  close + np.random.randn(len(dates))*0.5,
-        'High':  close + np.abs(np.random.randn(len(dates))*1.0),
-        'Low':   close - np.abs(np.random.randn(len(dates))*1.0),
-        'Close': close,
-        'Volume': np.random.randint(100, 1000, size=len(dates))
-    }, index=dates)
+#    df = pd.DataFrame({
+#        'Open':  close + np.random.randn(len(dates))*0.5,
+#        'High':  close + np.abs(np.random.randn(len(dates))*1.0),
+#        'Low':   close - np.abs(np.random.randn(len(dates))*1.0),
+#        'Close': close,
+#        'Volume': np.random.randint(100, 1000, size=len(dates))
+#    }, index=dates)
 
     # 4) Run the AnalysisAgent
-    agent  = AnalysisAgent(df)
-    agent.compute_all_indicators()
-    signals = agent.generate_signals()
-    print(signals.head())
+#    agent  = AnalysisAgent(df)
+#   agent.compute_all_indicators()
+#    signals = agent.generate_signals()
+#    print(signals.head())
+#    """
