@@ -6,15 +6,19 @@ A Python project template for downloading and processing financial time series (
 
 ```
 agent/
-├── agent_config.py # Load environment variables and API keys
-├── data_loader.py # Download raw data from various sources
-├── MAINTAINING
-├── MAINTAINING
-├── MAINTAINING
-├── MAINTAINING
-├── MAINTAINING
-├── MAINTAINING
-└── main.py # Entry point to run the full pipeline
+├── agent_config.py         # Load environment variables and API keys
+├── data_loader.py          # Fetch raw data (stock prices, macro series, crypto/Reddit posts)
+├── preprocessor.py         # Clean and impute raw datasets
+├── feature_engineer.py     # All feature construction (returns, rolling stats, RSI, MACD, etc.)
+├── sentiment_analysis.py   # Convert crypto discussion posts into daily sentiment scores
+├── analysis.py             # Compute technical indicators (SMA, EMA, RSI, MACD, BBANDS, ATR) and raw signals
+├── forecast.py             # Load trained models (Sklearn or GRU), produce N‑step forecasts and signals
+├── strategy.py             # Apply trading rules (e.g. minimum holding period, max trades per week) to signals
+├── portfolio.py            # Position sizing, trade execution, portfolio P&L, Sharpe ratio, max drawdown
+├── report_generate.py      # Generate a DOCX report: LLM summary + equity‑curve plots
+├── tradesystem.py          # Orchestrate full pipeline: load → preprocess → features → predict → strategy → portfolio → report
+└── main.py                 # Entry point: instantiate TradingSystem and kick off `run()`
+
 ```
 
 ## Prerequisites
