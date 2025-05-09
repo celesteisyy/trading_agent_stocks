@@ -106,6 +106,12 @@ class TradingSystem:
             try:
                 # Load price data
                 price_df = data_processor.load_stock_prices(batch_tickers)
+                # ensure we have a flat 'Close' as expected by the correlation logic
+                try:
+                    price_df = self._fix_price_columns(price_df)
+                except ValueError as e:
+                    self.logger.error(f"Cannot locate Close column in batch {batch_tickers}: {e}")
+                    continue
                 
                 # Calculate correlation for each ticker
                 for ticker in batch_tickers:
@@ -227,6 +233,8 @@ class TradingSystem:
         # 3. Load price data
         self.logger.info(f"Loading price data for {tickers}")
         price_df = data_processor.load_stock_prices(tickers)
+        price_df = price_df.loc[self.config['start_date']:self.config['end_date']]
+
 
         if not price_df.empty:
             try:
@@ -274,6 +282,7 @@ class TradingSystem:
             sentiment_df=sentiment_df,
             technical_signals_df=tech_signals
         )
+        signals_df = signals_df.loc[self.config['start_date']:self.config['end_date']]
         
         # 7. Run portfolio simulation
         self.logger.info("Running portfolio simulation")

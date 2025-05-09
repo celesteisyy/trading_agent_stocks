@@ -291,7 +291,7 @@ class AnalysisStrategy:
                 df.loc[date, 'sentiment'] = sentiment_df.loc[closest_date, 'avg_compound']
         
         # 5. Fill missing sentiment values with previous value
-        df['sentiment'] = df['sentiment'].ffill(method='ffill')
+        df['sentiment'] = df['sentiment'].ffill()
         
         # 6. Calculate sentiment change
         df['sentiment_change'] = df['sentiment'].diff()

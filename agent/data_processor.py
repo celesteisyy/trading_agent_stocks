@@ -13,6 +13,8 @@ import io, json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv, find_dotenv
 from scipy import stats
+import zstandard as zstd
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 class DataProcessor:
     """
@@ -243,10 +245,8 @@ class DataProcessor:
         csv_frames = []
         for ticker in tickers:
             # Try with .csv extension
-            path = os.path.join("data", f"{ticker}.csv")
-            if not os.path.exists(path):
-                # Also try in a "data/prices" directory
-                path = os.path.join("data", "prices", f"{ticker}.csv")
+            base = os.path.abspath(os.path.join(os.path.dirname(__file__), "data"))
+            path = os.path.join(base, f"{ticker}.csv")
             
             try:
                 if os.path.exists(path):
@@ -291,7 +291,9 @@ class DataProcessor:
         if csv_frames:
             result = pd.concat(csv_frames, axis=1).sort_index()
             self.logger.info(f"Successfully loaded price data from local CSV files")
-            return self._preprocess_dataframe(result)
+            df = self._preprocess_dataframe(result)
+            df = df.loc[self.start_date:self.end_date]
+            return df
 
         self.logger.error("All data sources for stock prices failed")
         raise RuntimeError("All data sources for `load_stock_prices` failed: yfinance, FMP, local CSV.")
@@ -394,101 +396,73 @@ class DataProcessor:
     
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
-        Load Reddit submissions from local ZST dumps for the specified subreddit.
-        Processes files named 'RS_YYYY-MM.zst' from 2023-12 through 2024-12.
-
-        Args:
-            subreddit: target subreddit name
-            limit: unused (kept for signature compatibility)
-
-        Returns:
-            DataFrame of Reddit posts sorted by timestamp.
+        Load Reddit submissions from local ZST dumps for the specified subreddit in parallel,
+        returning a DataFrame with the same schema as the raw JSON.
         """
-        import io, json
-        import zstandard as zstd
-
-        records = []
-        
-        # Try several possible base directories
+        # Determine submissions directory
         possible_paths = [
-            "./data/reddit/submissions",  # Relative to where script is run
-            "data/reddit/submissions",    # Alternative relative path
-            os.path.join(os.path.dirname(__file__), "..", "data", "reddit", "submissions"),  # From script location
-            os.path.abspath(os.path.join("data", "reddit", "submissions"))  # Absolute path
+            os.path.join(os.path.dirname(__file__), "data", "reddit", "submissions"),
+            "./data/reddit/submissions",
+            "data/reddit/submissions",
+            os.path.abspath(os.path.join("data", "reddit", "submissions"))
         ]
-        
-        base_dir = None
-        for path in possible_paths:
-            if os.path.exists(path):
-                base_dir = path
-                self.logger.info(f"Found Reddit data directory at: {path}")
-                break
-        
+        base_dir = next((p for p in possible_paths if os.path.isdir(p)), None)
         if not base_dir:
             self.logger.warning(f"Reddit submissions directory not found. Tried: {possible_paths}")
-            return pd.DataFrame(columns=['id','title','selftext','created_utc','score','num_comments','url'])
+            return pd.DataFrame()
 
-        # Process all available files matching the pattern 'RS_YYYY-MM.zst'
-        # Starting from 2023-12 to 2024-12
-        file_count = 0
-        for year in [2023, 2024]:
-            start_month = 12 if year == 2023 else 1
-            end_month = 12
-            
-            for month in range(start_month, end_month + 1):
-                # Try with underscore (RS_2024-01.zst)
-                file_pattern = f"RS_{year}-{month:02d}.zst"
-                file_path = os.path.join(base_dir, file_pattern)
-                
-                # If not found, try without underscore (RS 2024-01.zst)
-                if not os.path.exists(file_path):
-                    file_pattern = f"RS {year}-{month:02d}.zst"
-                    file_path = os.path.join(base_dir, file_pattern)
-                
-                if not os.path.exists(file_path):
-                    self.logger.debug(f"Reddit data file not found: {file_path}")
-                    continue
+        # List all .zst files
+        zst_files = [os.path.join(base_dir, f)
+                     for f in sorted(os.listdir(base_dir)) if f.lower().endswith('.zst')]
+        self.logger.info(f"Found {len(zst_files)} Reddit dump files to process")
 
-                file_count += 1
-                self.logger.info(f"Processing Reddit submissions from {file_pattern}")
-                try:
-                    # Stream-decompress and read JSON lines one by one
-                    dctx = zstd.ZstdDecompressor()
-                    with open(file_path, 'rb') as compressed, \
-                        io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
-                        for line in reader:
-                            try:
-                                post = json.loads(line)
-                            except json.JSONDecodeError:
-                                continue
-                            # Filter for the specified subreddit
-                            if post.get('subreddit', '').lower() != subreddit.lower():
-                                continue
-                            # Append the fields we need
-                            records.append({
-                                'id': post.get('id'),
-                                'title': post.get('title'),
-                                'selftext': post.get('selftext', ''),
-                                'created_utc': pd.to_datetime(post.get('created_utc', 0), unit='s'),
-                                'score': post.get('score'),
-                                'num_comments': post.get('num_comments'),
-                                'url': post.get('url')
-                            })
-                except Exception as e:
-                    self.logger.error(f"Error processing file {file_path}: {e}")
+        def _process_file(path):
+            try:
+                # Magic‑header check
+                with open(path, 'rb') as fh:
+                    if fh.read(4) != b"\x28\xb5\x2f\xfd":
+                        self.logger.warning(f"Skipping non‑zstd file: {path}")
+                        return None
+                # Decompress and parse
+                dctx = zstd.ZstdDecompressor()
+                with open(path, 'rb') as compressed, \
+                     io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
+                    posts = []
+                    for raw in reader:
+                        try:
+                            post = json.loads(raw)
+                        except json.JSONDecodeError:
+                            continue
+                        if post.get('subreddit', '').lower() != subreddit.lower():
+                            continue
+                        posts.append(post)
+                if not posts:
+                    return None
+                # Normalize JSON list into DataFrame
+                return pd.json_normalize(posts)
+            except Exception as e:
+                self.logger.error(f"Error processing file {path}: {e}")
+                return None
 
-        self.logger.info(f"Processed {file_count} Reddit data files")
-        
-        # Build final DataFrame
-        df = pd.DataFrame(records)
-        if not df.empty:
-            df = df.sort_values('created_utc').reset_index(drop=True)
-        else:
-            # Return an empty frame with the expected columns if nothing was found
-            df = pd.DataFrame(columns=[
-                'id','title','selftext','created_utc','score','num_comments','url'
-            ])
-            
+        # Parallel processing
+        dfs = []
+        with ThreadPoolExecutor(max_workers=min(4, len(zst_files))) as executor:
+            futures = {executor.submit(_process_file, fp): fp for fp in zst_files}
+            for future in as_completed(futures):
+                part = future.result()
+                if part is not None and not part.empty:
+                    dfs.append(part)
+
+        if not dfs:
+            self.logger.warning("No valid Reddit posts loaded from local .zst files.")
+            return pd.DataFrame()
+
+        # Concatenate and finalize
+        df = pd.concat(dfs, ignore_index=True)
+        if 'created_utc' in df.columns:
+            df['created_utc'] = pd.to_datetime(df['created_utc'], unit='s')
+            df.sort_values('created_utc', inplace=True)
+            df.reset_index(drop=True, inplace=True)
         self.logger.info(f"Loaded {len(df)} Reddit posts from {subreddit}")
         return df
     
