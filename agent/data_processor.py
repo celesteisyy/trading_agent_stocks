@@ -510,45 +510,33 @@ class DataProcessor:
         # ——— 3. Synthetic data fallback ———
         self.logger.warning(f"[Data] No Reddit posts available; generating synthetic data for '{subreddit}'.")
         return self._generate_synthetic_reddit(subreddit)
-
-
     
-    def compute_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+    def compute_technical_features(
+        self,
+        df: pd.DataFrame,
+        ticker: str = None,
+        macro_df: Optional[pd.DataFrame] = None,
+        defi_df: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
         """
-        Compute technical indicators for price data.
-        
-        Args:
-            df: DataFrame with price data (must have 'Close' column)
-            
-        Returns:
-            DataFrame with technical indicators
-        """
-    def compute_technical_features(self, df: pd.DataFrame, ticker: str = None) -> pd.DataFrame:
-        """
-        Compute technical indicators for price data.
-        
+        Compute technical indicators for price data and merge macro/DeFi features.
         Args:
             df: DataFrame with price data (must have 'Close' column)
             ticker: Optional ticker symbol to select specific close column when multiple exist
-            
+            macro_df: Optional DataFrame with macroeconomic series indexed by date
+            defi_df: Optional DataFrame with DeFi price series indexed by date
         Returns:
-            DataFrame with technical indicators
+            DataFrame with technical indicators plus macro/DeFi features
         """
-        # Build a mapping from lowercase column names to original names
+        # Build mapping from lowercase column names to original names
         lower_to_orig = {col.lower(): col for col in df.columns}
 
-        # Determine which original column to use as Close
+        # Determine which column to treat as Close
         if 'close' in lower_to_orig:
             close_orig = lower_to_orig['close']
         else:
-            # Find all columns ending with "_close" (case-insensitive)
-            candidates = [
-                orig for low, orig in lower_to_orig.items()
-                if low.endswith('_close')
-            ]
-            
+            candidates = [orig for low, orig in lower_to_orig.items() if low.endswith('_close')]
             if ticker is not None:
-                # If ticker is provided, look for that specific ticker's close column
                 ticker_close = f"{ticker}_Close"
                 if ticker_close in df.columns:
                     close_orig = ticker_close
@@ -557,38 +545,35 @@ class DataProcessor:
             elif len(candidates) == 1:
                 close_orig = candidates[0]
             elif len(candidates) > 1:
-                # If multiple close columns, use the first ticker's close column
                 first_ticker = candidates[0].split('_')[0]
                 self.logger.warning(
-                    f"Found multiple '_close' columns: {candidates!r}. "
-                    f"Using {first_ticker}'s close column by default."
+                    f"Found multiple '_close' columns: {candidates!r}. Using {first_ticker}'s close by default."
                 )
                 close_orig = candidates[0]
             else:
                 raise ValueError(
-                    "DataFrame must have one column named 'Close' (any case) or "
-                    "exactly one column ending with '_close' (any case)."
+                    "DataFrame must have one column named 'Close' or exactly one ending with '_close'."
                 )
 
-        # Copy the DataFrame and assign the selected column to 'Close'
+        # Copy and assign selected column to 'Close'
         df = df.copy()
         df['Close'] = df[close_orig]
-    
-        # Simple technical features
+
+        # Initialize result with base features
         result = df.copy()
-        
+
         # Returns
         result['return'] = result['Close'].pct_change()
         result['log_return'] = np.log(result['Close'] / result['Close'].shift(1))
-        
-        # Moving averages
+
+        # Moving averages and EMAs
         for window in [5, 20, 60]:
-            result[f'sma_{window}'] = result['Close'].rolling(window=window).mean()
+            result[f'sma_{window}'] = result['Close'].rolling(window).mean()
             result[f'ema_{window}'] = result['Close'].ewm(span=window, adjust=False).mean()
-        
+
         # Volatility
         result['volatility_20'] = result['return'].rolling(window=20).std()
-        
+
         # RSI
         delta = result['Close'].diff()
         up, down = delta.clip(lower=0), -delta.clip(upper=0)
@@ -596,38 +581,49 @@ class DataProcessor:
         roll_down = down.ewm(com=13, adjust=False).mean()
         rs = roll_up / roll_down
         result['rsi_14'] = 100 - (100 / (1 + rs))
-        
+
         # MACD
         ema12 = result['Close'].ewm(span=12, adjust=False).mean()
         ema26 = result['Close'].ewm(span=26, adjust=False).mean()
         result['macd'] = ema12 - ema26
         result['macd_signal'] = result['macd'].ewm(span=9, adjust=False).mean()
-        
+
         # Bollinger Bands
         result['bb_middle'] = result['Close'].rolling(window=20).mean()
         result['bb_std'] = result['Close'].rolling(window=20).std()
         result['bb_upper'] = result['bb_middle'] + 2 * result['bb_std']
         result['bb_lower'] = result['bb_middle'] - 2 * result['bb_std']
-        
+
+        # Merge macroeconomic features if provided
+        if macro_df is not None and not macro_df.empty:
+            macro_aligned = macro_df.reindex(result.index).ffill().bfill()
+            for col in macro_aligned.columns:
+                result[f'macro_{col}'] = macro_aligned[col]
+
+        # Merge DeFi features if provided
+        if defi_df is not None and not defi_df.empty:
+            defi_aligned = defi_df.reindex(result.index).ffill().bfill()
+            for col in defi_aligned.columns:
+                result[f'defi_{col}'] = defi_aligned[col]
+
         return result
-    
+
+
     def generate_technical_signals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Generate trading signals based on technical indicators.
-        
         Args:
             df: DataFrame with technical indicators
-            
         Returns:
             DataFrame with trading signals
         """
         signals = pd.DataFrame(index=df.index)
-        
+
         # RSI signals
         signals['rsi_sig'] = 0
         signals.loc[df['rsi_14'] < 30, 'rsi_sig'] = 1
         signals.loc[df['rsi_14'] > 70, 'rsi_sig'] = -1
-        
+
         # MACD crossover signals
         signals['macd_sig'] = 0
         macd = df['macd']
@@ -636,27 +632,26 @@ class DataProcessor:
         crossover_down = (macd < macd_sig) & (macd.shift(1) >= macd_sig.shift(1))
         signals.loc[crossover_up, 'macd_sig'] = 1
         signals.loc[crossover_down, 'macd_sig'] = -1
-        
+
         # Bollinger Bands signals
         signals['bb_sig'] = 0
         signals.loc[df['Close'] < df['bb_lower'], 'bb_sig'] = 1
         signals.loc[df['Close'] > df['bb_upper'], 'bb_sig'] = -1
-        
-        # SMA(20) crossover signals
+
+        # SMA crossover signals
         signals['sma_sig'] = 0
         sma20 = df['sma_20']
         sma_up = (df['Close'] > sma20) & (df['Close'].shift(1) <= sma20.shift(1))
         sma_down = (df['Close'] < sma20) & (df['Close'].shift(1) >= sma20.shift(1))
         signals.loc[sma_up, 'sma_sig'] = 1
         signals.loc[sma_down, 'sma_sig'] = -1
-        
+
         # Combined signal
         signals['combined_sig'] = signals.sum(axis=1)
-        # Normalize to -1, 0, 1
         signals['combined_sig'] = signals['combined_sig'].apply(
             lambda x: 1 if x > 0 else (-1 if x < 0 else 0)
         )
-        
+
         return signals
 
 

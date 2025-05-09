@@ -15,8 +15,8 @@ def load_config():
     
     # Build configuration dictionary
     config = {
-        'start_date': os.getenv('START_DATE', '2023-01-01'), # default time range, if not specified
-        'end_date': os.getenv('END_DATE', '2023-12-31'),
+        'start_date': os.getenv('START_DATE', '2024-01-01'), # default time range, if not specified
+        'end_date': os.getenv('END_DATE', '2024-12-31'),
         'model_type': os.getenv('MODEL_TYPE', 'gru'),
         'sentiment_method': os.getenv('SENTIMENT_METHOD', 'transformer'),
         'min_holding': int(os.getenv('MIN_HOLDING_PERIOD', '5')),
