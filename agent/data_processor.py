@@ -205,14 +205,52 @@ class DataProcessor:
         # 3) Local CSV fallback
         csv_frames = []
         for ticker in tickers:
-            path = os.path.join("data", "prices", f"{ticker}.csv")
+            # Try with .csv extension
+            path = os.path.join("data", f"{ticker}.csv")
+            if not os.path.exists(path):
+                # Also try in a "data/prices" directory
+                path = os.path.join("data", "prices", f"{ticker}.csv")
+            
             try:
-                df_csv = pd.read_csv(path, parse_dates=["date"], index_col="date")
-                df_csv.columns = pd.MultiIndex.from_product([[ticker], df_csv.columns])
-                csv_frames.append(df_csv)
+                if os.path.exists(path):
+                    self.logger.info(f"Loading {ticker} data from {path}")
+                    df_csv = pd.read_csv(path, parse_dates=["date"], index_col="date")
+                    
+                    # Check column names and standardize if needed
+                    if 'close' in [col.lower() for col in df_csv.columns]:
+                        # Get the actual case-sensitive column name
+                        close_col = next(col for col in df_csv.columns if col.lower() == 'close')
+                        # Rename to standard 'Close'
+                        if close_col != 'Close':
+                            df_csv = df_csv.rename(columns={close_col: 'Close'})
+                    
+                    # Add ticker level if needed
+                    if len(tickers) > 1:
+                        df_csv.columns = pd.MultiIndex.from_product([[ticker], df_csv.columns])
+                    
+                    csv_frames.append(df_csv)
+                    self.logger.info(f"Successfully loaded {ticker} from local CSV")
+                else:
+                    self.logger.warning(f"No local CSV file found for {ticker}")
             except Exception as e3:
                 self.logger.warning(f"Local CSV load failed for {ticker} ({e3})")
-        
+
+        # Handle the case where we have data in the current working directory
+        if not csv_frames and os.path.exists("AAPL.csv") and 'AAPL' in tickers:
+            try:
+                self.logger.info("Trying to load AAPL from current directory")
+                df_csv = pd.read_csv("AAPL.csv", parse_dates=["date"], index_col="date")
+                if 'close' in [col.lower() for col in df_csv.columns]:
+                    close_col = next(col for col in df_csv.columns if col.lower() == 'close')
+                    if close_col != 'Close':
+                        df_csv = df_csv.rename(columns={close_col: 'Close'})
+                if len(tickers) > 1:
+                    df_csv.columns = pd.MultiIndex.from_product([['AAPL'], df_csv.columns])
+                csv_frames.append(df_csv)
+                self.logger.info("Successfully loaded AAPL from current directory")
+            except Exception as e:
+                self.logger.warning(f"Failed to load AAPL from current directory: {e}")
+
         if csv_frames:
             result = pd.concat(csv_frames, axis=1).sort_index()
             self.logger.info(f"Successfully loaded price data from local CSV files")
@@ -320,7 +358,7 @@ class DataProcessor:
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
         Load Reddit submissions from local ZST dumps for the specified subreddit.
-        Only processes files named 'RS 2024-MM.zst' from 2024-06 through 2024-12 under ./data.
+        Processes files named 'RS_YYYY-MM.zst' from 2023-12 through 2024-12 under ./data/reddit/submissions.
 
         Args:
             subreddit: target subreddit name
@@ -341,42 +379,46 @@ class DataProcessor:
             self.logger.warning(f"Submissions directory not found: {base_dir}")
             return pd.DataFrame(columns=['id','title','selftext','created_utc','score','num_comments','url'])
 
-        # Process files matching the pattern 'RS 2024-MM.zst'
-        for month in range(6, 13):  # June (6) through December (12)
-            month_str = f"2024-{month:02d}"
-            filename = f"RS {month_str}.zst"  # Note the space instead of underscore
-            file_path = os.path.join(base_dir, filename)
+        # Process all available files matching the pattern 'RS_YYYY-MM.zst'
+        # Starting from 2023-12 to 2024-12
+        for year in [2023, 2024]:
+            start_month = 12 if year == 2023 else 1
+            end_month = 12
             
-            if not os.path.exists(file_path):
-                self.logger.warning(f"File not found: {file_path}")
-                continue
+            for month in range(start_month, end_month + 1):
+                file_pattern = f"RS_{year}-{month:02d}.zst"
+                file_path = os.path.join(base_dir, file_pattern)
+                
+                if not os.path.exists(file_path):
+                    self.logger.warning(f"File not found: {file_path}")
+                    continue
 
-            self.logger.info(f"Processing Reddit submissions from {month_str}")
-            try:
-                # Stream-decompress and read JSON lines one by one
-                dctx = zstd.ZstdDecompressor()
-                with open(file_path, 'rb') as compressed, \
-                    io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
-                    for line in reader:
-                        try:
-                            post = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        # Filter for the specified subreddit
-                        if post.get('subreddit', '').lower() != subreddit.lower():
-                            continue
-                        # Append the fields we need
-                        records.append({
-                            'id': post.get('id'),
-                            'title': post.get('title'),
-                            'selftext': post.get('selftext', ''),
-                            'created_utc': pd.to_datetime(post.get('created_utc', 0), unit='s'),
-                            'score': post.get('score'),
-                            'num_comments': post.get('num_comments'),
-                            'url': post.get('url')
-                        })
-            except Exception as e:
-                self.logger.error(f"Error processing file {file_path}: {e}")
+                self.logger.info(f"Processing Reddit submissions from {year}-{month:02d}")
+                try:
+                    # Stream-decompress and read JSON lines one by one
+                    dctx = zstd.ZstdDecompressor()
+                    with open(file_path, 'rb') as compressed, \
+                        io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
+                        for line in reader:
+                            try:
+                                post = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            # Filter for the specified subreddit
+                            if post.get('subreddit', '').lower() != subreddit.lower():
+                                continue
+                            # Append the fields we need
+                            records.append({
+                                'id': post.get('id'),
+                                'title': post.get('title'),
+                                'selftext': post.get('selftext', ''),
+                                'created_utc': pd.to_datetime(post.get('created_utc', 0), unit='s'),
+                                'score': post.get('score'),
+                                'num_comments': post.get('num_comments'),
+                                'url': post.get('url')
+                            })
+                except Exception as e:
+                    self.logger.error(f"Error processing file {file_path}: {e}")
 
         # Build final DataFrame
         df = pd.DataFrame(records)

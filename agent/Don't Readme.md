@@ -64,8 +64,8 @@ This trading system analyzes sentiment from cryptocurrency discussions on Reddit
 * Create a configuration file named `fin580.env` with your API keys:
    ```
    # Trading system configuration
-   START_DATE=2020-01-01
-   END_DATE=2025-01-01
+   START_DATE=2024-01-01
+   END_DATE=2024-12-31
    MODEL_TYPE=gru
    SENTIMENT_METHOD=transformer
    MIN_HOLDING_PERIOD=5

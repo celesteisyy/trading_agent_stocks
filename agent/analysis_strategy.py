@@ -2,10 +2,10 @@ import pandas as pd
 import numpy as np
 import os
 import logging
-import pickle
 import torch
 from datetime import timedelta
 from typing import Dict, List, Optional, Union, Tuple
+from gru_model import GRUModelTrainer
 
 class AnalysisStrategy:
     """
@@ -13,19 +13,21 @@ class AnalysisStrategy:
     1. Combines technical analysis, sentiment data, and ML predictions
     2. Generates trading signals with configurable weights
     3. Evaluates the contribution of sentiment analysis to strategy performance
-    4. Supports multiple model types (GRU or sklearn)
+    4. Supports GRU model for price prediction
     """
     
-    def __init__(self,
-                 sentiment_threshold: float = 0.3,
-                 sentiment_change_threshold: float = 0.1,
-                 min_holding_period: int = 5,
-                 max_trades_per_week: int = 3,
-                 model_path: Optional[str] = None,
-                 model_type: str = 'gru',
-                 sentiment_weight: float = 0.6,
-                 technical_weight: float = 0.4,
-                 seq_len: int = 60):
+    def __init__(
+        self,
+        sentiment_threshold: float = 0.3,
+        sentiment_change_threshold: float = 0.1,
+        min_holding_period: int = 5,
+        max_trades_per_week: int = 3,
+        model_path: Optional[str] = None,
+        model_type: str = 'gru',
+        sentiment_weight: float = 0.6,
+        technical_weight: float = 0.4,
+        seq_len: int = 60
+    ):
         """
         Initialize the analysis and strategy system.
         
@@ -34,8 +36,8 @@ class AnalysisStrategy:
             sentiment_change_threshold: Minimum change in sentiment to generate a signal
             min_holding_period: Days to hold a position before new trade
             max_trades_per_week: Max trades in any rolling 7-day window
-            model_path: Path to the GRU model file (will be created if not exists)
-            model_type: Only 'gru' is supported
+            model_path: Path to the prediction model file
+            model_type: Type of model ('gru')
             sentiment_weight: Weight for sentiment signals (0-1)
             technical_weight: Weight for technical signals (0-1)
             seq_len: Sequence length for GRU model input
@@ -50,273 +52,16 @@ class AnalysisStrategy:
         self.seq_len = seq_len
         
         # Model related attributes
-        self.model = None
-        self.model_type = 'gru'  # Always use GRU model
+        self.model_path = model_path
+        self.model_type = 'gru'  # Always use GRU
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Load or create GRU model
-        if model_path:
-            self.load_model(model_path)
-        else:
-            self.logger.warning("No model path provided")
-            
-        # If model loading failed, create a simple one
-        if self.model is None:
-            self.logger.warning("No model loaded, creating default GRU model")
-            self.model = self._create_gru_model()
-            self.model.to(self.device).eval()
-    
-    def load_model(self, model_path: str):
-        """
-        Load or create GRU prediction model.
+        # Initialize GRU trainer
+        self.gru_trainer = GRUModelTrainer(seq_len=seq_len, device=self.device)
         
-        Args:
-            model_path: Path to model file
-        """
-        try:
-            if self.model_type == 'gru':
-                # Use GPU if available
-                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                
-                if os.path.exists(model_path):
-                    # Load existing model
-                    self.model = torch.load(model_path, map_location=self.device)
-                    self.logger.info(f"Loaded GRU model from {model_path} (device: {self.device})")
-                else:
-                    # Create a new GRU model if file doesn't exist
-                    self.logger.info(f"Creating new GRU model (device: {self.device})")
-                    self.model = self._create_gru_model()
-                    
-                    # Save the created model
-                    try:
-                        torch.save(self.model, model_path)
-                        self.logger.info(f"Saved new GRU model to {model_path}")
-                    except Exception as e:
-                        self.logger.warning(f"Failed to save new GRU model: {e}")
-                    
-                # Set model to evaluation mode
-                self.model.to(self.device).eval()
-            else:
-                self.logger.error(f"Unsupported model_type: {self.model_type}, only 'gru' is supported")
-                raise ValueError(f"Unsupported model_type: {self.model_type}, only 'gru' is supported")
-        except Exception as e:
-            self.logger.error(f"Failed to load or create model: {e}")
-            # Instead of setting model to None, raise the exception
-            raise
-
-    def _create_gru_model(self):
-        """
-        Create a simple GRU model for price prediction.
-        
-        Returns:
-            A PyTorch GRU model
-        """
-        import torch
-        import torch.nn as nn
-        
-        class SimpleGRUModel(nn.Module):
-            """
-            Simple GRU model with flexible input features.
-            Takes in a sequence of features and predicts the next price.
-            """
-            def __init__(self, input_dim=5, hidden_dim=64, num_layers=2, dropout=0.2):
-                super(SimpleGRUModel, self).__init__()
-                
-                self.hidden_dim = hidden_dim
-                self.num_layers = num_layers
-                
-                # GRU layers
-                self.gru = nn.GRU(
-                    input_size=input_dim,
-                    hidden_size=hidden_dim,
-                    num_layers=num_layers,
-                    batch_first=True,
-                    dropout=dropout if num_layers > 1 else 0
-                )
-                
-                # Prediction layer
-                self.fc = nn.Linear(hidden_dim, 1)
-            
-            def forward(self, x):
-                """
-                Forward pass through the network.
-                
-                Args:
-                    x: Input tensor of shape [batch_size, seq_len, input_dim]
-                    
-                Returns:
-                    Output tensor of shape [batch_size, 1]
-                """
-                # Initialize hidden state
-                h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-                
-                # GRU forward
-                out, _ = self.gru(x, h0)
-                
-                # Get prediction using the last output
-                out = self.fc(out[:, -1, :])
-                
-                return out
-        
-        # Create model instance - input_dim should match the number of features used in _predict_with_gru
-        input_dim = 5  # price + sentiment + some technical indicators
-        model = SimpleGRUModel(input_dim=input_dim)
-        
-        # Set to device
-        model.to(self.device)
-        
-        # Set to evaluation mode
-        model.eval()
-        
-        return model
-    
-    def load_base_model(self, model_path: str):
-        """
-        Load base model (without sentiment) for A/B comparison.
-        
-        Args:
-            model_path: Path to base model file
-        """
-        try:
-            if self.base_model_type == 'sklearn':
-                with open(model_path, 'rb') as f:
-                    self.base_model = pickle.load(f)
-                self.logger.info(f"Loaded base sklearn model from {model_path}")
-            elif self.base_model_type == 'gru':
-                # Use same device as primary model
-                self.base_model = torch.load(model_path, map_location=self.device)
-                self.base_model.to(self.device).eval()
-                self.logger.info(f"Loaded base GRU model from {model_path}")
-        except Exception as e:
-            self.logger.error(f"Failed to load base model: {e}")
-            self.base_model = None
-    
-    def _predict_with_gru(self, price_series, sentiment_series=None, technical_indicators=None):
-        """
-        Generate prediction using GRU model with multiple features.
-        
-        Args:
-            price_series: Series of price data
-            sentiment_series: Series of sentiment data (optional)
-            technical_indicators: DataFrame of technical indicators (optional)
-            
-        Returns:
-            Signal value: 1 (buy), -1 (sell), or 0 (hold)
-        """
-        # Prepare input sequence (last seq_len values)
-        price_vals = price_series.values[-self.seq_len:]
-        if len(price_vals) < self.seq_len:
-            # Pad with zeros if not enough data
-            price_vals = np.pad(price_vals, (self.seq_len - len(price_vals), 0), 'constant')
-        
-        # Initialize feature list with price data
-        features = [price_vals]
-        
-        # Add sentiment data if available
-        if sentiment_series is not None:
-            sent_vals = sentiment_series.values[-self.seq_len:]
-            if len(sent_vals) < self.seq_len:
-                sent_vals = np.pad(sent_vals, (self.seq_len - len(sent_vals), 0), 'constant')
-            features.append(sent_vals)
-        else:
-            # Add zeros for sentiment feature if not available
-            features.append(np.zeros_like(price_vals))
-        
-        # Add technical indicators if available
-        # Select key technical indicators (limited to ensure consistent input dims)
-        tech_indicators = ['rsi_14', 'macd', 'bb_upper']
-        if technical_indicators is not None:
-            for indicator in tech_indicators:
-                if indicator in technical_indicators.columns:
-                    tech_vals = technical_indicators[indicator].values[-self.seq_len:]
-                    if len(tech_vals) < self.seq_len:
-                        tech_vals = np.pad(tech_vals, (self.seq_len - len(tech_vals), 0), 'constant')
-                    features.append(tech_vals)
-                else:
-                    # Add zeros if indicator not available
-                    features.append(np.zeros_like(price_vals))
-        else:
-            # Add zeros for missing technical indicators
-            for _ in tech_indicators:
-                features.append(np.zeros_like(price_vals))
-        
-        # Stack features into a 2D array [seq_len, num_features]
-        feature_array = np.column_stack(features)
-        
-        # Convert to tensor
-        seq = (
-            torch.tensor(feature_array, dtype=torch.float32)
-                .unsqueeze(0)      # Add batch dimension [1, seq_len, num_features]
-                .to(self.device)
-        )
-        
-        # Get prediction
-        try:
-            with torch.no_grad():
-                pred = self.model(seq)
-            
-            # Convert to signal: 1 if predicted price > current price, -1 if lower, 0 if same
-            current_price = float(price_series.iloc[-1])
-            predicted_price = float(pred.squeeze(0).cpu().numpy()[0])
-            
-            # Log prediction for debugging
-            self.logger.debug(f"GRU prediction: current={current_price:.2f}, predicted={predicted_price:.2f}")
-            
-            if predicted_price > current_price * 1.01:  # 1% threshold
-                return 1
-            elif predicted_price < current_price * 0.99:  # -1% threshold
-                return -1
-            else:
-                return 0
-        except Exception as e:
-            self.logger.error(f"Error in GRU prediction: {e}")
-            return 0  # Return neutral signal on error
-    
-    def _predict_with_sklearn(self, price_series, sentiment_series=None, technical_indicators=None):
-        """
-        Generate prediction using sklearn model with multiple features.
-        
-        Args:
-            price_series: Series of price data
-            sentiment_series: Series of sentiment data (optional)
-            technical_indicators: DataFrame of technical indicators (optional)
-            
-        Returns:
-            Signal value: 1 (buy), -1 (sell), or 0 (hold)
-        """
-        # Get last price
-        last_val = float(price_series.iloc[-1])
-        
-        # Create feature vector
-        features = [last_val]
-        
-        # Add sentiment if available
-        if sentiment_series is not None and not sentiment_series.empty:
-            latest_sentiment = sentiment_series.iloc[-1]
-            features.append(float(latest_sentiment))
-        
-        # Add technical indicators if available
-        if technical_indicators is not None and not technical_indicators.empty:
-            tech_indicators = ['rsi_14', 'macd', 'bb_upper', 'bb_lower', 'sma_20']
-            for indicator in tech_indicators:
-                if indicator in technical_indicators.columns:
-                    latest_value = technical_indicators[indicator].iloc[-1]
-                    features.append(float(latest_value))
-        
-        # Predict next price
-        try:
-            pred = self.model.predict([features])[0]
-            
-            # Convert to signal
-            if pred > last_val * 1.01:  # 1% threshold
-                return 1
-            elif pred < last_val * 0.99:  # -1% threshold
-                return -1
-            else:
-                return 0
-        except Exception as e:
-            self.logger.error(f"Prediction error: {e}")
-            return 0
+        # Load model if provided
+        if model_path and os.path.exists(model_path):
+            self.gru_trainer.load_model(model_path)
     
     def calculate_technical_indicators(self, price_df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -411,6 +156,91 @@ class AnalysisStrategy:
         
         return signals
     
+    def _predict_with_gru(self, price_series, sentiment_series=None, technical_indicators=None):
+        """
+        Generate prediction using GRU model with multiple features.
+        
+        Args:
+            price_series: Series of price data
+            sentiment_series: Series of sentiment data (optional)
+            technical_indicators: DataFrame of technical indicators (optional)
+            
+        Returns:
+            Signal value: 1 (buy), -1 (sell), or 0 (hold)
+        """
+        # Check if we need to train a model
+        if self.gru_trainer.model is None and len(price_series) > self.seq_len * 2:
+            self.logger.info("No GRU model loaded, training a new one...")
+            
+            # Prepare data for training
+            price_df = pd.DataFrame({'Close': price_series})
+            
+            sentiment_df = None
+            if sentiment_series is not None and not sentiment_series.empty:
+                sentiment_df = pd.DataFrame({'avg_compound': sentiment_series})
+                sentiment_df.index = price_series.index
+            
+            # Train the model
+            self.gru_trainer.train(
+                price_df=price_df,
+                sentiment_df=sentiment_df,
+                tech_indicators=technical_indicators,
+                epochs=50,
+                batch_size=32
+            )
+            
+            # Save the model if path specified
+            if self.model_path:
+                self.gru_trainer.save_model(self.model_path)
+        
+        # If still no model, return neutral signal
+        if self.gru_trainer.model is None:
+            return 0
+        
+        # Prepare features for prediction
+        features = []
+        
+        # Add price data
+        price_vals = price_series.values[-self.seq_len:]
+        if len(price_vals) < self.seq_len:
+            price_vals = np.pad(price_vals, (self.seq_len - len(price_vals), 0), 'constant')
+        features.append(price_vals)
+        
+        # Add sentiment if available
+        if sentiment_series is not None:
+            sent_vals = sentiment_series.values[-self.seq_len:]
+            if len(sent_vals) < self.seq_len:
+                sent_vals = np.pad(sent_vals, (self.seq_len - len(sent_vals), 0), 'constant')
+            features.append(sent_vals)
+        else:
+            # Add zeros for sentiment
+            features.append(np.zeros(self.seq_len))
+        
+        # Add technical indicators if available
+        tech_features = ['rsi_14', 'macd', 'bb_upper']
+        if technical_indicators is not None:
+            for feature in tech_features:
+                if feature in technical_indicators.columns:
+                    tech_vals = technical_indicators[feature].values[-self.seq_len:]
+                    if len(tech_vals) < self.seq_len:
+                        tech_vals = np.pad(tech_vals, (self.seq_len - len(tech_vals), 0), 'constant')
+                    features.append(tech_vals)
+                else:
+                    features.append(np.zeros(self.seq_len))
+        else:
+            # Add zeros for missing indicators
+            for _ in range(len(tech_features)):
+                features.append(np.zeros(self.seq_len))
+        
+        # Stack features
+        feature_array = np.column_stack(features)
+        
+        # Get current price
+        current_price = float(price_series.iloc[-1])
+        
+        # Use GRU trainer to get trading signal
+        return self.gru_trainer.predict_signal(current_price, feature_array, threshold=0.01)
+    
     def generate_strategy_signals(
         self,
         price_df: pd.DataFrame,
@@ -468,23 +298,18 @@ class AnalysisStrategy:
         
         # 7. Generate model-based prediction signals with multiple features
         df['model_signal'] = 0
-        if self.model is not None:
-            sentiment_series = df['sentiment']
+        sentiment_series = df['sentiment']
+        
+        # For each day, predict using appropriate window of data
+        for i in range(min(self.seq_len, 5), len(df)):
+            # Extract feature windows
+            price_window = df['price'].iloc[i-min(self.seq_len, 5):i]
+            sentiment_window = sentiment_series.iloc[i-min(self.seq_len, 5):i]
+            tech_window = technical_indicators.iloc[i-min(self.seq_len, 5):i] if technical_indicators is not None else None
             
-            # For each day, predict using appropriate window of data
-            for i in range(min(self.seq_len, 5), len(df)):
-                # Extract feature windows
-                price_window = df['price'].iloc[i-min(self.seq_len, 5):i]
-                sentiment_window = sentiment_series.iloc[i-min(self.seq_len, 5):i]
-                tech_window = technical_indicators.iloc[i-min(self.seq_len, 5):i] if technical_indicators is not None else None
-                
-                # Predict with multiple features
-                if self.model_type == 'gru':
-                    df.iloc[i, df.columns.get_loc('model_signal')] = self._predict_with_gru(
-                        price_window, sentiment_window, tech_window)
-                else:
-                    df.iloc[i, df.columns.get_loc('model_signal')] = self._predict_with_sklearn(
-                        price_window, sentiment_window, tech_window)
+            # Predict with GRU model
+            df.iloc[i, df.columns.get_loc('model_signal')] = self._predict_with_gru(
+                price_window, sentiment_window, tech_window)
         
         # 8. Generate sentiment-based signals
         df['sentiment_signal'] = 0
@@ -559,7 +384,7 @@ class AnalysisStrategy:
             trades.append(ts)
         
         return df[['raw_signal', 'sentiment_signal', 'technical_signal', 'model_signal', 
-                'order', 'price', 'sentiment', 'sentiment_change']]
+                  'order', 'price', 'sentiment', 'sentiment_change']]
     
     def generate_baseline_signals(
         self,

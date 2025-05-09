@@ -29,17 +29,33 @@ Since we often get fellows asking about the detailed working logic of this multi
 ├── portfolio_manager.py        # 7. Portfolio simulation and reporting
 
 # Supporting Directories
-├── data/                       # Input data directory
-│   ├── AAPL.csv                # Apple stock price data
-│   └── GSPC.csv                # S&P 500 index data
-├── output/                     # Output directory
-│   └── trading_report.docx     # Generated trading report
-├── test_notebook/              # Jupyter notebooks for testing
-│   ├── crypto_data.ipynb       # Crypto data analysis notebook
-│   ├── fmp_localdata.ipynb     # Financial data testing
-│   └── reddit_sent.ipynb       # Reddit sentiment analysis testing
-├── Don't Readme.md             # Might be deleted someday
-└── README.md                   # This readme file
+.
+├── main.py                     # Entry point: orchestrates data fetching, preprocessing, strategy execution, and reporting
+├── fin580.env.example          # Example environment file (copy to fin580.env and fill in your keys)
+├── README.md                   # Project overview and instructions
+├── requirements.txt            # Python dependencies
+├── data_processor.py           # Data fetching and cleaning logic
+├── sentiment_analyzer.py       # Module for Reddit and other text sentiment scoring
+├── analysis_strategy.py        # Trading signal generation strategies
+├── gru_model.py                # GRU model definition and training
+├── portfolio_manager.py        # Backtesting and portfolio management
+├── tradingsystem.py            # High-level orchestration and execution
+│
+├── data/                       # Raw and example data, noted that this will not show in repo because of file limit
+│   ├── reddit/submissions/     # Reddit submissions stored as .zst files
+│   ├── AAPL.csv                # Sample stock price data
+│   └── GSPC.csv                # Sample index price data
+│
+├── notebooks/                  # Jupyter notebooks for demos and testing
+│   ├── crypto_data.ipynb
+│   ├── fmp_localdata.ipynb
+│   └── reddit_sent.ipynb
+│
+├── output/                     # Generated outputs: reports, logs, visualizations
+│   └── trading_report.docx
+│
+├── .gitignore
+└── LICENSE
 ```
 
 ## Quick Installation
@@ -63,7 +79,7 @@ Create a file named `fin580.env` with your API keys:
 
 ```
 # Required settings
-START_DATE=2024-06-01
+START_DATE=2024-01-01
 END_DATE=2024-12-31
 REDDIT_SUBREDDIT=CryptoCurrency
 OUTPUT_DIR=output

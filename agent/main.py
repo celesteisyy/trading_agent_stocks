@@ -25,7 +25,7 @@ def load_config():
         'min_holding': int(os.getenv('MIN_HOLDING_PERIOD', '5')),
         'max_trades': int(os.getenv('MAX_TRADES_PER_WEEK', '3')),
         'initial_capital': float(os.getenv('INITIAL_CAPITAL', '100000.0')),
-        'output_dir': os.getenv('OUTPUT_DIR', 'output'),
+        'output_dir': os.getenv('OUTPUT_DIR', 'agent/output'),
         'reddit_subreddit': os.getenv('REDDIT_SUBREDDIT', 'CryptoCurrency'),
         'sentiment_threshold': float(os.getenv('SENTIMENT_THRESHOLD', '0.3')),
         'sentiment_change_threshold': float(os.getenv('SENTIMENT_CHANGE_THRESHOLD', '0.1')),

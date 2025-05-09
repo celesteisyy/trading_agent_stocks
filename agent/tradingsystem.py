@@ -40,7 +40,7 @@ class TradingSystem:
         self.config = config
         
         # Create necessary directories
-        os.makedirs(config.get('output_dir', 'output'), exist_ok=True)
+        os.makedirs(config.get('output_dir', 'agent/output'), exist_ok=True)
         os.makedirs('agent/models', exist_ok=True)
     
     def select_stocks_by_sentiment(self) -> List[str]:
@@ -141,6 +141,12 @@ class TradingSystem:
         
         num_stocks = int(self.config.get('num_stocks', 5))
         selected_tickers = [ticker for ticker, corr in sorted_correlations[:num_stocks]]
+        
+        # If no correlations were found, use default tickers
+        if not selected_tickers:
+            self.logger.warning("No correlation-based tickers found, using default tickers")
+            selected_tickers = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD']
+        
         self.logger.info(f"Selected {len(selected_tickers)} stocks with highest correlation: {selected_tickers}")
         
         return selected_tickers
@@ -152,19 +158,29 @@ class TradingSystem:
         Returns:
             Dictionary with results
         """
-        # 1. Select stocks if not already specified
+        # Select stocks if not already specified
         tickers = self.config.get('tickers')
         if not tickers:
             tickers = self.select_stocks_by_sentiment()
             self.config['tickers'] = tickers
-        
+
+        # Ensure we have at least some default tickers
+        if not tickers:
+            self.logger.warning("No tickers selected or specified, using default tickers")
+            tickers = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD']
+            self.config['tickers'] = tickers
+
         self.logger.info(f"Trading analysis will use tickers: {tickers}")
+
+        # 2. Initialize core components
+        data_processor = DataProcessor(
+            start_date=self.config['start_date'],
+            end_date=self.config['end_date'])
         
         # 2. Initialize core components
         data_processor = DataProcessor(
             start_date=self.config['start_date'],
-            end_date=self.config['end_date']
-        )
+            end_date=self.config['end_date'])
         
         sentiment_analyzer = SentimentAnalyzer(
             method=self.config.get('sentiment_method', 'transformer'),
@@ -187,12 +203,21 @@ class TradingSystem:
         
         portfolio_manager = PortfolioManager(
             initial_capital=float(self.config.get('initial_capital', 100000.0)),
-            output_dir=self.config.get('output_dir', 'output')
+            output_dir=self.config.get('output_dir', 'agent/output')
         )
         
         # 3. Load price data
         self.logger.info(f"Loading price data for {tickers}")
         price_df = data_processor.load_stock_prices(tickers)
+
+        if not price_df.empty:
+            try:
+                price_df = self._fix_price_columns(price_df)
+            except ValueError as e:
+                self.logger.error(f"Error fixing price columns: {e}")
+                # Print available columns to help diagnose
+                self.logger.info(f"Available columns: {price_df.columns.tolist()}")
+                raise
         
         # Normalize columns for single ticker or first ticker
         if isinstance(price_df.columns, pd.MultiIndex):
@@ -203,6 +228,7 @@ class TradingSystem:
             else:
                 # Flatten the columns
                 price_df.columns = [col[1] for col in price_df.columns]
+
         
         # 4. Load Reddit data and analyze sentiment
         self.logger.info("Loading and analyzing Reddit data")
@@ -276,6 +302,54 @@ class TradingSystem:
         
         # Just return the path - will be created in AnalysisStrategy if not found
         return model_path
+    def _fix_price_columns(self, price_df):
+        """
+        Fix column names in the price DataFrame to ensure 'Close' column exists.
+        
+        Args:
+            price_df: DataFrame with price data
+            
+        Returns:
+            DataFrame with corrected column names
+        """
+        # First check if Close already exists
+        if 'Close' in price_df.columns:
+            return price_df
+        
+        # Make a copy to avoid modifying the original
+        df = price_df.copy()
+        
+        # Try to find alternate column names for close price
+        close_candidates = [
+            col for col in df.columns 
+            if any(term in col.lower() for term in ['close', 'price', 'last', 'adj'])
+        ]
+        
+        if close_candidates:
+            # Use the first match
+            df['Close'] = df[close_candidates[0]]
+            self.logger.info(f"Using '{close_candidates[0]}' as 'Close' column")
+            return df
+        
+        # If still no suitable column, check if there's any numerical column we can use
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            df['Close'] = df[numeric_cols[0]]
+            self.logger.info(f"Using numeric column '{numeric_cols[0]}' as 'Close'")
+            return df
+        
+        # If we have a multi-index DataFrame, check columns at level 1
+        if isinstance(df.columns, pd.MultiIndex):
+            level1_close = [(l0, l1) for l0, l1 in df.columns if 'close' in l1.lower()]
+            if level1_close:
+                # Extract this column and make it a non-multi-index DataFrame
+                df = pd.DataFrame({'Close': df[level1_close[0]]})
+                return df
+        
+        # If we get here, we couldn't find any usable price column
+        self.logger.error("Could not find a suitable column to use as 'Close'")
+        raise ValueError("No suitable price column found to use as 'Close'")
+
 
 
 if __name__ == "__main__":
