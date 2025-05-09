@@ -16,18 +16,16 @@ class AnalysisStrategy:
     4. Supports multiple model types (GRU or sklearn)
     """
     
-    def __init__(
-        self,
-        sentiment_threshold: float = 0.3,
-        sentiment_change_threshold: float = 0.1,
-        min_holding_period: int = 5,
-        max_trades_per_week: int = 3,
-        model_path: Optional[str] = None,
-        model_type: str = 'gru',
-        sentiment_weight: float = 0.6,
-        technical_weight: float = 0.4,
-        seq_len: int = 60
-    ):
+    def __init__(self,
+                 sentiment_threshold: float = 0.3,
+                 sentiment_change_threshold: float = 0.1,
+                 min_holding_period: int = 5,
+                 max_trades_per_week: int = 3,
+                 model_path: Optional[str] = None,
+                 model_type: str = 'gru',
+                 sentiment_weight: float = 0.6,
+                 technical_weight: float = 0.4,
+                 seq_len: int = 60):
         """
         Initialize the analysis and strategy system.
         
@@ -36,8 +34,8 @@ class AnalysisStrategy:
             sentiment_change_threshold: Minimum change in sentiment to generate a signal
             min_holding_period: Days to hold a position before new trade
             max_trades_per_week: Max trades in any rolling 7-day window
-            model_path: Path to the prediction model file
-            model_type: Type of model ('gru' or 'sklearn')
+            model_path: Path to the GRU model file (will be created if not exists)
+            model_type: Only 'gru' is supported
             sentiment_weight: Weight for sentiment signals (0-1)
             technical_weight: Weight for technical signals (0-1)
             seq_len: Sequence length for GRU model input
@@ -53,41 +51,124 @@ class AnalysisStrategy:
         
         # Model related attributes
         self.model = None
-        self.model_type = model_type.lower()
-        self.device = None
+        self.model_type = 'gru'  # Always use GRU model
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        # Create a secondary model (without sentiment) for A/B testing
-        self.base_model = None
-        self.base_model_type = model_type.lower()
-        
-        # Load model if provided
-        if model_path and os.path.exists(model_path):
+        # Load or create GRU model
+        if model_path:
             self.load_model(model_path)
+        else:
+            self.logger.warning("No model path provided")
+            
+        # If model loading failed, create a simple one
+        if self.model is None:
+            self.logger.warning("No model loaded, creating default GRU model")
+            self.model = self._create_gru_model()
+            self.model.to(self.device).eval()
     
     def load_model(self, model_path: str):
         """
-        Load prediction model from file.
+        Load or create GRU prediction model.
         
         Args:
             model_path: Path to model file
         """
         try:
-            if self.model_type == 'sklearn':
-                with open(model_path, 'rb') as f:
-                    self.model = pickle.load(f)
-                self.logger.info(f"Loaded sklearn model from {model_path}")
-            elif self.model_type == 'gru':
+            if self.model_type == 'gru':
                 # Use GPU if available
                 self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-                self.model = torch.load(model_path, map_location=self.device)
+                
+                if os.path.exists(model_path):
+                    # Load existing model
+                    self.model = torch.load(model_path, map_location=self.device)
+                    self.logger.info(f"Loaded GRU model from {model_path} (device: {self.device})")
+                else:
+                    # Create a new GRU model if file doesn't exist
+                    self.logger.info(f"Creating new GRU model (device: {self.device})")
+                    self.model = self._create_gru_model()
+                    
+                    # Save the created model
+                    try:
+                        torch.save(self.model, model_path)
+                        self.logger.info(f"Saved new GRU model to {model_path}")
+                    except Exception as e:
+                        self.logger.warning(f"Failed to save new GRU model: {e}")
+                    
+                # Set model to evaluation mode
                 self.model.to(self.device).eval()
-                self.logger.info(f"Loaded GRU model from {model_path} (device: {self.device})")
             else:
-                self.logger.error(f"Unsupported model_type: {self.model_type}")
-                raise ValueError(f"Unsupported model_type: {self.model_type}")
+                self.logger.error(f"Unsupported model_type: {self.model_type}, only 'gru' is supported")
+                raise ValueError(f"Unsupported model_type: {self.model_type}, only 'gru' is supported")
         except Exception as e:
-            self.logger.error(f"Failed to load model: {e}")
-            self.model = None
+            self.logger.error(f"Failed to load or create model: {e}")
+            # Instead of setting model to None, raise the exception
+            raise
+
+    def _create_gru_model(self):
+        """
+        Create a simple GRU model for price prediction.
+        
+        Returns:
+            A PyTorch GRU model
+        """
+        import torch
+        import torch.nn as nn
+        
+        class SimpleGRUModel(nn.Module):
+            """
+            Simple GRU model with flexible input features.
+            Takes in a sequence of features and predicts the next price.
+            """
+            def __init__(self, input_dim=5, hidden_dim=64, num_layers=2, dropout=0.2):
+                super(SimpleGRUModel, self).__init__()
+                
+                self.hidden_dim = hidden_dim
+                self.num_layers = num_layers
+                
+                # GRU layers
+                self.gru = nn.GRU(
+                    input_size=input_dim,
+                    hidden_size=hidden_dim,
+                    num_layers=num_layers,
+                    batch_first=True,
+                    dropout=dropout if num_layers > 1 else 0
+                )
+                
+                # Prediction layer
+                self.fc = nn.Linear(hidden_dim, 1)
+            
+            def forward(self, x):
+                """
+                Forward pass through the network.
+                
+                Args:
+                    x: Input tensor of shape [batch_size, seq_len, input_dim]
+                    
+                Returns:
+                    Output tensor of shape [batch_size, 1]
+                """
+                # Initialize hidden state
+                h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+                
+                # GRU forward
+                out, _ = self.gru(x, h0)
+                
+                # Get prediction using the last output
+                out = self.fc(out[:, -1, :])
+                
+                return out
+        
+        # Create model instance - input_dim should match the number of features used in _predict_with_gru
+        input_dim = 5  # price + sentiment + some technical indicators
+        model = SimpleGRUModel(input_dim=input_dim)
+        
+        # Set to device
+        model.to(self.device)
+        
+        # Set to evaluation mode
+        model.eval()
+        
+        return model
     
     def load_base_model(self, model_path: str):
         """
@@ -137,17 +218,27 @@ class AnalysisStrategy:
             if len(sent_vals) < self.seq_len:
                 sent_vals = np.pad(sent_vals, (self.seq_len - len(sent_vals), 0), 'constant')
             features.append(sent_vals)
+        else:
+            # Add zeros for sentiment feature if not available
+            features.append(np.zeros_like(price_vals))
         
         # Add technical indicators if available
+        # Select key technical indicators (limited to ensure consistent input dims)
+        tech_indicators = ['rsi_14', 'macd', 'bb_upper']
         if technical_indicators is not None:
-            # Select key technical indicators
-            tech_indicators = ['rsi_14', 'macd', 'bb_upper', 'bb_lower', 'sma_20']
             for indicator in tech_indicators:
                 if indicator in technical_indicators.columns:
                     tech_vals = technical_indicators[indicator].values[-self.seq_len:]
                     if len(tech_vals) < self.seq_len:
                         tech_vals = np.pad(tech_vals, (self.seq_len - len(tech_vals), 0), 'constant')
                     features.append(tech_vals)
+                else:
+                    # Add zeros if indicator not available
+                    features.append(np.zeros_like(price_vals))
+        else:
+            # Add zeros for missing technical indicators
+            for _ in tech_indicators:
+                features.append(np.zeros_like(price_vals))
         
         # Stack features into a 2D array [seq_len, num_features]
         feature_array = np.column_stack(features)
@@ -160,19 +251,26 @@ class AnalysisStrategy:
         )
         
         # Get prediction
-        with torch.no_grad():
-            pred = self.model(seq)
-        
-        # Convert to signal: 1 if predicted price > current price, -1 if lower, 0 if same
-        current_price = float(price_series.iloc[-1])
-        predicted_price = float(pred.squeeze(0).cpu().numpy()[0])
-        
-        if predicted_price > current_price * 1.01:  # 1% threshold
-            return 1
-        elif predicted_price < current_price * 0.99:  # -1% threshold
-            return -1
-        else:
-            return 0
+        try:
+            with torch.no_grad():
+                pred = self.model(seq)
+            
+            # Convert to signal: 1 if predicted price > current price, -1 if lower, 0 if same
+            current_price = float(price_series.iloc[-1])
+            predicted_price = float(pred.squeeze(0).cpu().numpy()[0])
+            
+            # Log prediction for debugging
+            self.logger.debug(f"GRU prediction: current={current_price:.2f}, predicted={predicted_price:.2f}")
+            
+            if predicted_price > current_price * 1.01:  # 1% threshold
+                return 1
+            elif predicted_price < current_price * 0.99:  # -1% threshold
+                return -1
+            else:
+                return 0
+        except Exception as e:
+            self.logger.error(f"Error in GRU prediction: {e}")
+            return 0  # Return neutral signal on error
     
     def _predict_with_sklearn(self, price_series, sentiment_series=None, technical_indicators=None):
         """
@@ -461,7 +559,7 @@ class AnalysisStrategy:
             trades.append(ts)
         
         return df[['raw_signal', 'sentiment_signal', 'technical_signal', 'model_signal', 
-                  'order', 'price', 'sentiment', 'sentiment_change']]
+                'order', 'price', 'sentiment', 'sentiment_change']]
     
     def generate_baseline_signals(
         self,

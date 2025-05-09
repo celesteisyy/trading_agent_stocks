@@ -3,6 +3,7 @@ import os
 import pandas as pd
 import numpy as np
 from typing import Dict, List, Optional, Union, Tuple
+import pickle
 
 # Import optimized modules
 from data_processor import DataProcessor
@@ -10,6 +11,13 @@ from sentiment_analyzer import SentimentAnalyzer
 from analysis_strategy import AnalysisStrategy
 from portfolio_manager import PortfolioManager
 
+class RandomWalkModel:
+    """Dummy model that predicts random walk values when no real model is available."""
+    def predict(self, X):
+        import numpy as np
+        return [x[0] + np.random.randn() * 0.1 for x in X]
+
+    
 class TradingSystem:
     """
     Master orchestrator for the entire trading system workflow:
@@ -162,14 +170,17 @@ class TradingSystem:
             method=self.config.get('sentiment_method', 'transformer'),
             transformer_model='ProsusAI/finbert' if self.config.get('sentiment_method') == 'transformer' else None
         )
-        
+
+        self.config['model_type'] = 'gru'
+        gru_model_path = self._find_model_path()
+
         analysis_strategy = AnalysisStrategy(
             sentiment_threshold=float(self.config.get('sentiment_threshold', 0.3)),
             sentiment_change_threshold=float(self.config.get('sentiment_change_threshold', 0.1)),
             min_holding_period=int(self.config.get('min_holding', 5)),
             max_trades_per_week=int(self.config.get('max_trades', 3)),
-            model_path=self._find_model_path(),
-            model_type=self.config.get('model_type', 'gru'),
+            model_path=gru_model_path,
+            model_type='gru',
             sentiment_weight=float(self.config.get('sentiment_weight', 0.6)),
             technical_weight=float(self.config.get('technical_weight', 0.4))
         )
@@ -252,30 +263,18 @@ class TradingSystem:
         
         return results
     
-    def _find_model_path(self) -> Optional[str]:
-        """Find appropriate model path based on configuration."""
-        if self.config.get('model_type') == 'gru':
-            model_path = os.path.join('agent', 'models', 'gru_model.pt')
-            if not os.path.exists(model_path):
-                self.logger.warning("GRU model not found, falling back to sklearn model")
-                self.config['model_type'] = 'sklearn'
-                model_path = os.path.join('agent', 'models', 'dummy_model.pkl')
-        else:
-            model_path = os.path.join('agent', 'models', 'dummy_model.pkl')
+    def _find_model_path(self) -> str:
+        """
+        Find or create the GRU model path.
+        Returns only the GRU model path, with no fallback to other model types.
+        """
+        self.config['model_type'] = 'gru'
+        model_path = os.path.join('agent', 'models', 'gru_model.pt')
         
-        # Create dummy sklearn model if needed
-        if self.config['model_type'] == 'sklearn' and not os.path.exists(model_path):
-            import pickle
-            
-            class RandomWalkModel:
-                def predict(self, X):
-                    return [x[0] + np.random.randn() * 0.1 for x in X]
-            
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            with open(model_path, 'wb') as f:
-                pickle.dump(RandomWalkModel(), f)
-            self.logger.info(f"Created dummy model at {model_path}")
+        # Ensure the directory exists
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
         
+        # Just return the path - will be created in AnalysisStrategy if not found
         return model_path
 
 

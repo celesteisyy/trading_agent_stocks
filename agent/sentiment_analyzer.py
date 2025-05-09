@@ -30,6 +30,22 @@ class SentimentAnalyzer:
         self.method = method.lower()
         self.chunk_stride = chunk_stride
         
+        if self.method == 'vader':
+            try:
+                # try downloading VADER dictionary
+                import nltk
+                try:
+                    nltk.data.find('sentiment/vader_lexicon.zip')
+                except LookupError:
+                    self.logger.info("Downloading NLTK vader_lexicon...")
+                    nltk.download('vader_lexicon', quiet=True)
+                    
+                self.analyzer = SentimentIntensityAnalyzer()
+                self.logger.info("Initialized VADER sentiment analyzer")
+            except Exception as e:
+                self.logger.error(f"Failed to initialize VADER: {e}")
+                self.method = 'fallback'
+                
         # Initialize the appropriate analyzer
         if self.method == 'vader':
             try:

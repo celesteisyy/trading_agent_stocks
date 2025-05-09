@@ -23,7 +23,6 @@ class DataProcessor:
     - Data cleaning and normalization
     - Feature computation for technical analysis
     """
-    
     def __init__(self, start_date: str, end_date: str, interval: str = "1d"):
         """
         Initialize DataProcessor.
@@ -37,7 +36,7 @@ class DataProcessor:
         self.end_date = end_date
         self.interval = interval
         self.logger = logging.getLogger(__name__)
-        self.zst_dir = os.getenv('PUSHSHIFT_ZST_DIR', '/path/to/pushshift_dumps/submissions')
+        self.zst_dir = './data/reddit/submissions'
         
         # Load environment variables
         env_path = find_dotenv("fin580.env", raise_error_if_not_found=True)
@@ -320,50 +319,51 @@ class DataProcessor:
     
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
-        Load Reddit submissions from local ZST dumps for the CryptoCurrency subreddit.
-        Only processes the folders RC_2024-06 through RC_2024-12 under ../data.
+        Load Reddit submissions from local ZST dumps for the specified subreddit.
+        Only processes files named 'RS 2024-MM.zst' from 2024-06 through 2024-12 under ./data.
 
         Args:
-            subreddit: target subreddit name (ignored; always 'CryptoCurrency')
+            subreddit: target subreddit name
             limit: unused (kept for signature compatibility)
 
         Returns:
-            DataFrame of all posts in r/CryptoCurrency sorted by timestamp.
+            DataFrame of Reddit posts sorted by timestamp.
         """
         import io, json
         import zstandard as zstd
 
         records = []
-        # Base directory where monthly dumps live
-        base_dir = os.path.abspath(os.path.join(__file__, '..', '..', 'data'))
+        # Base directory where the dumps live
+        base_dir = "./data/reddit/submissions"
+        
+        # Ensure the directory exists
+        if not os.path.exists(base_dir):
+            self.logger.warning(f"Submissions directory not found: {base_dir}")
+            return pd.DataFrame(columns=['id','title','selftext','created_utc','score','num_comments','url'])
 
-        # Loop through each RC_YYYY-MM folder in ../data
-        for folder in os.listdir(base_dir):
-            if not folder.startswith('RC_'):
+        # Process files matching the pattern 'RS 2024-MM.zst'
+        for month in range(6, 13):  # June (6) through December (12)
+            month_str = f"2024-{month:02d}"
+            filename = f"RS {month_str}.zst"  # Note the space instead of underscore
+            file_path = os.path.join(base_dir, filename)
+            
+            if not os.path.exists(file_path):
+                self.logger.warning(f"File not found: {file_path}")
                 continue
-            year_month = folder[3:]  # e.g. "2024-06"
-            # Only June → December 2024
-            if year_month < '2024-06' or year_month > '2024-12':
-                continue
 
-            path = os.path.join(base_dir, folder)
-            # Within each folder, find the .zst files
-            for fname in os.listdir(path):
-                if not fname.endswith('.zst'):
-                    continue
-                zst_path = os.path.join(path, fname)
-
+            self.logger.info(f"Processing Reddit submissions from {month_str}")
+            try:
                 # Stream-decompress and read JSON lines one by one
                 dctx = zstd.ZstdDecompressor()
-                with open(zst_path, 'rb') as compressed, \
+                with open(file_path, 'rb') as compressed, \
                     io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
                     for line in reader:
                         try:
                             post = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        # Only keep posts from r/CryptoCurrency
-                        if post.get('subreddit', '').lower() != 'cryptocurrency':
+                        # Filter for the specified subreddit
+                        if post.get('subreddit', '').lower() != subreddit.lower():
                             continue
                         # Append the fields we need
                         records.append({
@@ -375,6 +375,8 @@ class DataProcessor:
                             'num_comments': post.get('num_comments'),
                             'url': post.get('url')
                         })
+            except Exception as e:
+                self.logger.error(f"Error processing file {file_path}: {e}")
 
         # Build final DataFrame
         df = pd.DataFrame(records)
@@ -385,6 +387,8 @@ class DataProcessor:
             df = pd.DataFrame(columns=[
                 'id','title','selftext','created_utc','score','num_comments','url'
             ])
+            
+        self.logger.info(f"Loaded {len(df)} Reddit posts from {subreddit}")
         return df
     
     def _generate_synthetic_reddit(self, subreddit: str) -> pd.DataFrame:
