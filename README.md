@@ -32,12 +32,14 @@ git clone <repo-url>
 cd crypto-sentiment-trading
 ```  
 2. Create and activate a Python 3.8+ virtual environment:
-   ```bash
+
+```bash
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 ```  
 3. Install dependencies:
-   ```bash
+
+```bash
 pip install -r requirements.txt
 ```  
 4. Copy `fin580.env.example` to `fin580.env` and fill in your API keys (FRED, Reddit, FMP).
