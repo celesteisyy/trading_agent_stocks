@@ -365,7 +365,53 @@ class TradingSystem:
         
         return results
 
-
+    def _fix_price_columns(self, price_df):
+        """
+        Fix column names in the price DataFrame to ensure 'Close' column exists.
+        
+        Args:
+            price_df: DataFrame with price data
+            
+        Returns:
+            DataFrame with corrected column names
+        """
+        # First check if Close already exists
+        if 'Close' in price_df.columns:
+            return price_df
+        
+        # Make a copy to avoid modifying the original
+        df = price_df.copy()
+        
+        # Try to find alternate column names for close price
+        close_candidates = [
+            col for col in df.columns 
+            if any(term in col.lower() for term in ['close', 'price', 'last', 'adj'])
+        ]
+        
+        if close_candidates:
+            # Use the first match
+            df['Close'] = df[close_candidates[0]]
+            self.logger.info(f"Using '{close_candidates[0]}' as 'Close' column")
+            return df
+        
+        # If still no suitable column, check if there's any numerical column we can use
+        numeric_cols = df.select_dtypes(include=['number']).columns
+        if len(numeric_cols) > 0:
+            df['Close'] = df[numeric_cols[0]]
+            self.logger.info(f"Using numeric column '{numeric_cols[0]}' as 'Close'")
+            return df
+        
+        # If we have a multi-index DataFrame, check columns at level 1
+        if isinstance(df.columns, pd.MultiIndex):
+            level1_close = [(l0, l1) for l0, l1 in df.columns if 'close' in l1.lower()]
+            if level1_close:
+                # Extract this column and make it a non-multi-index DataFrame
+                df = pd.DataFrame({'Close': df[level1_close[0]]})
+                return df
+        
+        # If we get here, we couldn't find any usable price column
+        self.logger.error("Could not find a suitable column to use as 'Close'")
+        raise ValueError("No suitable price column found to use as 'Close'")
 
 if __name__ == "__main__":
     # Setup basic logging
