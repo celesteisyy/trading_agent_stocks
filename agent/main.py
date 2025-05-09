@@ -2,13 +2,10 @@ import logging
 import os
 import sys
 from dotenv import load_dotenv, find_dotenv
-
-# Import trading system
 from tradingsystem import TradingSystem
 
 def load_config():
     """Load configuration from environment variables."""
-    # Find and load environment variables from fin580.env
     env_path = find_dotenv("fin580.env", raise_error_if_not_found=False)
     if env_path:
         load_dotenv(env_path)
