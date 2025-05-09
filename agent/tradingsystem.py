@@ -177,6 +177,7 @@ class TradingSystem:
         
         return selected_tickers
     
+ 
     def run(self):
         """
         Execute the full trading pipeline.
@@ -195,11 +196,6 @@ class TradingSystem:
             self.logger.warning("No tickers selected or specified, using default S&P 500 tech stocks")
             tickers = ['AAPL', 'MSFT', 'GOOG', 'NVDA', 'AMD']  # DEFAULT S&P 500 tech stocks
             self.config['tickers'] = tickers
-
-        # 2. Initialize core components
-        data_processor = DataProcessor(
-            start_date=self.config['start_date'],
-            end_date=self.config['end_date'])
         
         # 2. Initialize core components
         data_processor = DataProcessor(
@@ -210,16 +206,18 @@ class TradingSystem:
             method=self.config.get('sentiment_method', 'transformer'),
             transformer_model='ProsusAI/finbert' if self.config.get('sentiment_method') == 'transformer' else None
         )
-
+        # Create model directory for potential saving
         self.config['model_type'] = 'gru'
-        gru_model_path = self._find_model_path()
+        model_dir = os.path.join('agent', 'models')
+        os.makedirs(model_dir, exist_ok=True)
+
 
         analysis_strategy = AnalysisStrategy(
-            sentiment_threshold=float(self.config.get('sentiment_threshold', 0.3)),
-            sentiment_change_threshold=float(self.config.get('sentiment_change_threshold', 0.1)),
+            sentiment_threshold=float(self.config.get('sentiment_threshold', 0.2)),
+            sentiment_change_threshold=float(self.config.get('sentiment_change_threshold', 0.01)),
             min_holding_period=int(self.config.get('min_holding', 5)),
             max_trades_per_week=int(self.config.get('max_trades', 3)),
-            model_path=gru_model_path,
+            model_path=None,
             model_type='gru',
             sentiment_weight=float(self.config.get('sentiment_weight', 0.6)),
             technical_weight=float(self.config.get('technical_weight', 0.4))
@@ -234,26 +232,36 @@ class TradingSystem:
         self.logger.info(f"Loading price data for {tickers}")
         price_df = data_processor.load_stock_prices(tickers)
         price_df = price_df.loc[self.config['start_date']:self.config['end_date']]
-
-
-        if not price_df.empty:
-            try:
-                price_df = self._fix_price_columns(price_df)
-            except ValueError as e:
-                self.logger.error(f"Error fixing price columns: {e}")
-                # Print available columns to help diagnose
-                self.logger.info(f"Available columns: {price_df.columns.tolist()}")
-                raise
         
-        # Normalize columns for single ticker or first ticker
+        # Check if we have data
+        if price_df.empty:
+            self.logger.error("No price data loaded")
+            raise ValueError("No price data loaded for the specified tickers and date range")
+        
+        # Verify we have the 'Close' column (should be standardized by data_processor)
         if isinstance(price_df.columns, pd.MultiIndex):
+            # For multiple tickers
             if len(tickers) > 1:
                 # Use the first ticker for trading
                 ticker_to_use = tickers[0]
+                self.logger.info(f"Using {ticker_to_use} for trading")
+                
+                # Make sure the ticker exists in the data
+                if ticker_to_use not in [col[0] for col in price_df.columns]:
+                    self.logger.error(f"Ticker {ticker_to_use} not found in price data")
+                    raise ValueError(f"Ticker {ticker_to_use} not found in price data")
+                    
+                # Select data for this ticker
                 price_df = price_df[ticker_to_use].copy()
             else:
-                # Flatten the columns
+                # Single ticker with MultiIndex - flatten
                 price_df.columns = [col[1] for col in price_df.columns]
+        
+        # Final check for 'Close' column
+        if 'Close' not in price_df.columns:
+            self.logger.error("'Close' column not found in price data")
+            self.logger.info(f"Available columns: {price_df.columns.tolist()}")
+            raise ValueError("'Close' column not found in price data")
 
         
         # 4. Load Reddit data and analyze sentiment
@@ -275,8 +283,8 @@ class TradingSystem:
         self.logger.info("Generating technical signals")
         tech_signals = analysis_strategy.generate_technical_signals(indicators_df)
         
-        # 6. Generate strategy signals
-        self.logger.info("Generating combined strategy signals")
+        # 6. Generate strategy signals with sentiment
+        self.logger.info("Generating sentiment-enhanced strategy signals")
         signals_df = analysis_strategy.generate_strategy_signals(
             price_df=price_df,
             sentiment_df=sentiment_df,
@@ -284,98 +292,78 @@ class TradingSystem:
         )
         signals_df = signals_df.loc[self.config['start_date']:self.config['end_date']]
         
-        # 7. Run portfolio simulation
-        self.logger.info("Running portfolio simulation")
-        portfolio_df = portfolio_manager.backtest(signals_df)
+        # 7. Generate baseline strategy signals (without sentiment)
+        self.logger.info("Generating baseline strategy signals (without sentiment)")
+        baseline_signals = analysis_strategy.generate_baseline_signals(
+            price_df=price_df,
+            technical_signals_df=tech_signals
+        )
+        baseline_signals = baseline_signals.loc[self.config['start_date']:self.config['end_date']]
         
-        # 8. Calculate performance metrics
+        # 8. Run portfolio simulations for both strategies
+        self.logger.info("Running portfolio simulations")
+        portfolio_df = portfolio_manager.backtest(signals_df)
+        baseline_portfolio_df = portfolio_manager.backtest(baseline_signals)
+        
+        # 9. Calculate performance metrics for both strategies
         self.logger.info("Calculating performance metrics")
         metrics = portfolio_manager.compute_performance(portfolio_df)
+        baseline_metrics = portfolio_manager.compute_performance(baseline_portfolio_df)
         
-        # 9. Generate report
-        self.logger.info("Generating performance report")
-        ticker_str = tickers[0] if len(tickers) == 1 else f"{len(tickers)} Tech Stocks"
-        report_path = portfolio_manager.generate_report(
-            portfolio_df=portfolio_df,
-            metrics=metrics,
-            ticker=ticker_str
+        # 10. Analyze sentiment contribution
+        self.logger.info("Analyzing sentiment contribution")
+        sentiment_analysis = portfolio_manager.analyze_sentiment_contribution(
+            baseline_portfolio_df, 
+            portfolio_df, 
+            sentiment_df
         )
         
-        # 10. Create and launch dashboard
+        # 11. Generate reports
+        self.logger.info("Generating performance reports")
+        ticker_str = tickers[0] if len(tickers) == 1 else f"{len(tickers)} Tech Stocks"
+        
+        # Generate individual strategy reports
+        full_report_path = portfolio_manager.generate_report(
+            portfolio_df=portfolio_df,
+            metrics=metrics,
+            ticker=f"{ticker_str} (With Sentiment)",
+            report_path=os.path.join(self.config.get('output_dir', 'agent/output'), 'sentiment_strategy_report.docx')
+        )
+        
+        baseline_report_path = portfolio_manager.generate_report(
+            portfolio_df=baseline_portfolio_df,
+            metrics=baseline_metrics,
+            ticker=f"{ticker_str} (Without Sentiment)",
+            report_path=os.path.join(self.config.get('output_dir', 'agent/output'), 'baseline_strategy_report.docx')
+        )
+        
+        # Generate sentiment contribution report
+        sentiment_report_path = portfolio_manager.generate_sentiment_report(
+            sentiment_analysis=sentiment_analysis,
+            report_path=os.path.join(self.config.get('output_dir', 'agent/output'), 'sentiment_contribution_report.docx')
+        )
+        
+        self.logger.info(f"Reports generated at:\n- {full_report_path}\n- {baseline_report_path}\n- {sentiment_report_path}")
+        
+        # 12. Create and launch dashboard
         self.logger.info("Creating interactive dashboard")
         results = {
             'portfolio': portfolio_df,
+            'base_portfolio': baseline_portfolio_df,  # Add baseline portfolio
+            'sentiment_portfolio': portfolio_df,      # For sentiment comparison
             'orders': signals_df,
+            'baseline_orders': baseline_signals,      # Add baseline orders
             'metrics': metrics,
+            'baseline_metrics': baseline_metrics,     # Add baseline metrics
             'sentiment': sentiment_df,
-            'technical': tech_signals
+            'technical': tech_signals,
+            'sentiment_analysis': sentiment_analysis  # Add sentiment analysis
         }
         
         dashboard = portfolio_manager.create_dashboard(results, self.config)
         dashboard.launch(share=False)
         
         return results
-    
-    def _find_model_path(self) -> str:
-        """
-        Find or create the GRU model path.
-        Returns only the GRU model path, with no fallback to other model types.
-        """
-        self.config['model_type'] = 'gru'
-        model_path = os.path.join('agent', 'models', 'gru_model.pt')
-        
-        # Ensure the directory exists
-        os.makedirs(os.path.dirname(model_path), exist_ok=True)
-        
-        # Just return the path - will be created in AnalysisStrategy if not found
-        return model_path
-    def _fix_price_columns(self, price_df):
-        """
-        Fix column names in the price DataFrame to ensure 'Close' column exists.
-        
-        Args:
-            price_df: DataFrame with price data
-            
-        Returns:
-            DataFrame with corrected column names
-        """
-        # First check if Close already exists
-        if 'Close' in price_df.columns:
-            return price_df
-        
-        # Make a copy to avoid modifying the original
-        df = price_df.copy()
-        
-        # Try to find alternate column names for close price
-        close_candidates = [
-            col for col in df.columns 
-            if any(term in col.lower() for term in ['close', 'price', 'last', 'adj'])
-        ]
-        
-        if close_candidates:
-            # Use the first match
-            df['Close'] = df[close_candidates[0]]
-            self.logger.info(f"Using '{close_candidates[0]}' as 'Close' column")
-            return df
-        
-        # If still no suitable column, check if there's any numerical column we can use
-        numeric_cols = df.select_dtypes(include=['number']).columns
-        if len(numeric_cols) > 0:
-            df['Close'] = df[numeric_cols[0]]
-            self.logger.info(f"Using numeric column '{numeric_cols[0]}' as 'Close'")
-            return df
-        
-        # If we have a multi-index DataFrame, check columns at level 1
-        if isinstance(df.columns, pd.MultiIndex):
-            level1_close = [(l0, l1) for l0, l1 in df.columns if 'close' in l1.lower()]
-            if level1_close:
-                # Extract this column and make it a non-multi-index DataFrame
-                df = pd.DataFrame({'Close': df[level1_close[0]]})
-                return df
-        
-        # If we get here, we couldn't find any usable price column
-        self.logger.error("Could not find a suitable column to use as 'Close'")
-        raise ValueError("No suitable price column found to use as 'Close'")
 
 
 

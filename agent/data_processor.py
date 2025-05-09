@@ -398,40 +398,13 @@ class DataProcessor:
 
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
-        1) First attempt: fetch the last 7 days of posts via PRAW (Reddit API).
-        2) Second attempt: fall back to decompressing local .zst dumps:
-        - Skip any file whose header is not valid zstd.
-        - Catch and skip corrupted files.
-        - Abort waiting after 30 seconds total.
-        3) Final fallback: generate synthetic posts for testing, matching the same
-        columns and overall DataFrame structure.
+        Efficiently load Reddit posts from local .zst archives:
+        1. Prioritizes newest .zst files
+        2. Uses sampling to quickly scan large files
+        3. Implements early termination strategies
+        4. Falls back to synthetic data if needed
         """
-        # ——— 1. Try real‑time fetch via PRAW ———
-        if self.reddit:
-            try:
-                cutoff = datetime.now() - timedelta(days=7)
-                posts = []
-                for submission in self.reddit.subreddit(subreddit).new(limit=1000):
-                    created = datetime.fromtimestamp(submission.created_utc)
-                    if created < cutoff:
-                        break
-                    posts.append({
-                        'id':           submission.id,
-                        'title':        submission.title,
-                        'selftext':     submission.selftext,
-                        'created_utc':  created,
-                        'score':        submission.score,
-                        'num_comments': submission.num_comments,
-                        'url':          submission.url
-                    })
-                if posts:
-                    df = pd.DataFrame(posts)
-                    self.logger.info(f"Fetched {len(df)} posts from Reddit API (last 7 days).")
-                    return df.head(limit)
-            except Exception as e:
-                self.logger.warning(f"[PRAW] Failed to fetch real‑time data, falling back to .zst: {e}")
-
-        # ——— 2. Fall back to local .zst files ———
+        # Skip PRAW (API) entirely and focus on .zst files
         candidate_dirs = [
             os.path.join(os.path.dirname(__file__), "data", "reddit", "submissions"),
             "./data/reddit/submissions",
@@ -443,73 +416,152 @@ class DataProcessor:
             self.logger.warning("[Data] Local Reddit directory not found; using synthetic data.")
             return self._generate_synthetic_reddit(subreddit)
 
+        # Find and sort .zst files by name (assuming YYYY-MM format in filenames)
         zst_files = [
             os.path.join(base_dir, f)
-            for f in sorted(os.listdir(base_dir))
+            for f in sorted(os.listdir(base_dir), reverse=True)  # Reverse to get newest first
             if f.lower().endswith('.zst')
         ]
-        self.logger.info(f"Found {len(zst_files)} .zst files in {base_dir}.")
+        
+        if not zst_files:
+            self.logger.warning("[Data] No .zst files found; using synthetic data.")
+            return self._generate_synthetic_reddit(subreddit)
+            
+        self.logger.info(f"Found {len(zst_files)} .zst files in {base_dir}, processing newest first.")
 
-        def _process_file(path):
+        def _process_file_with_sampling(path, target_sample_size=3000):
+            """Process a .zst file with intelligent sampling to avoid reading the entire file."""
             try:
-                # Check magic‑header: skip if not a zstd file
+                # Verify file has valid zstd header
                 with open(path, 'rb') as fh:
                     if fh.read(4) != b"\x28\xb5\x2f\xfd":
                         self.logger.warning(f"Skipping non‑zstd file: {path}")
                         return None
 
-                # Decompress and parse JSON lines
+                # Get file size to determine sampling strategy
+                file_size = os.path.getsize(path)
+                
+                # For very large files (>100MB), use aggressive sampling
+                if file_size > 100_000_000:  # 100MB
+                    sample_rate = max(1, int(file_size / (2_000_000 * target_sample_size)))  # Read ~every Nth post
+                    self.logger.info(f"Large file detected ({file_size/1_000_000:.1f}MB), sampling 1/{sample_rate} lines")
+                else:
+                    sample_rate = 1  # Read every post for smaller files
+                
+                posts = []
+                line_counter = 0
+                posts_found = 0
+                
+                # Set up decompression stream with a limited buffer size to control memory usage
                 dctx = zstd.ZstdDecompressor()
-                with open(path, 'rb') as compressed, \
-                    io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
-
-                    posts = []
-                    for raw in reader:
-                        try:
-                            post = json.loads(raw)
-                        except json.JSONDecodeError:
-                            continue
-                        if post.get('subreddit', '').lower() == subreddit.lower():
-                            posts.append(post)
+                with open(path, 'rb') as compressed:
+                    with dctx.stream_reader(compressed) as reader:
+                        text_reader = io.TextIOWrapper(reader, encoding='utf-8')
+                        
+                        # Use a 50MB read limit to avoid memory issues on very large files
+                        bytes_read = 0
+                        max_bytes = 50_000_000  # 25MB limit
+                        
+                        for line in text_reader:
+                            line_counter += 1
+                            bytes_read += len(line)
+                            
+                            # Apply sampling rate to avoid processing every line in large files
+                            if line_counter % sample_rate != 0:
+                                continue
+                                
+                            try:
+                                # Fast check if subreddit is likely in this line before full JSON parse
+                                if f'"subreddit":"{subreddit}"' not in line and f'"subreddit": "{subreddit}"' not in line:
+                                    # Quick reject for obvious non-matches
+                                    continue
+                                    
+                                post = json.loads(line)
+                                if post.get('subreddit', '').lower() == subreddit.lower():
+                                    # Extract only needed fields to save memory
+                                    filtered_post = {
+                                        'id': post.get('id', ''),
+                                        'title': post.get('title', ''),
+                                        'selftext': post.get('selftext', ''),
+                                        'created_utc': post.get('created_utc', 0),
+                                        'score': post.get('score', 0),
+                                        'num_comments': post.get('num_comments', 0),
+                                        'url': post.get('url', '')
+                                    }
+                                    posts.append(filtered_post)
+                                    posts_found += 1
+                                    
+                                    # Stop after finding enough posts
+                                    if posts_found >= target_sample_size:
+                                        self.logger.info(f"Found {posts_found} posts in {path}, stopping early")
+                                        break
+                            except json.JSONDecodeError:
+                                continue
+                            
+                            # Early termination if read limit exceeded
+                            if bytes_read > max_bytes:
+                                self.logger.info(f"Reached {max_bytes/1_000_000:.1f}MB read limit with {posts_found} posts in {path}")
+                                break
 
                 if not posts:
                     return None
 
-                return pd.json_normalize(posts)
+                # Convert to DataFrame
+                df = pd.DataFrame(posts)
+                # Convert timestamp to datetime
+                if 'created_utc' in df.columns:
+                    df['created_utc'] = pd.to_datetime(df['created_utc'], unit='s')
+                
+                return df
 
             except zstd.ZstdError as e:
-                # Skip corrupted zstd files
                 self.logger.error(f"Decompression failed for {path}: {e}")
                 return None
             except Exception as e:
                 self.logger.error(f"Error processing {path}: {e}")
                 return None
 
-        dfs = []
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(zst_files))) as executor:
-            future_to_path = {executor.submit(_process_file, p): p for p in zst_files}
-            try:
-                # Wait up to 30 seconds total for all tasks
-                for future in concurrent.futures.as_completed(future_to_path, timeout=30):
-                    df_part = future.result()
-                    if df_part is not None and not df_part.empty:
-                        dfs.append(df_part)
-            except concurrent.futures.TimeoutError:
-                self.logger.warning("[Data] .zst decompression timed out; stopping further processing.")
+        # Process only the newest files first (most relevant data)
+        max_files_to_process = min(5, len(zst_files))
+        files_to_process = zst_files[:max_files_to_process]
+        self.logger.info(f"Processing {len(files_to_process)} newest .zst files out of {len(zst_files)} total")
 
-        if dfs:
-            # Concatenate and clean up timestamp
-            df = pd.concat(dfs, ignore_index=True)
-            if 'created_utc' in df.columns:
-                df['created_utc'] = pd.to_datetime(df['created_utc'], unit='s')
-                df.sort_values('created_utc', inplace=True)
-                df.reset_index(drop=True, inplace=True)
-            self.logger.info(f"Loaded {len(df)} posts from local .zst files.")
-            return df.head(limit)
-
-        # ——— 3. Synthetic data fallback ———
-        self.logger.warning(f"[Data] No Reddit posts available; generating synthetic data for '{subreddit}'.")
-        return self._generate_synthetic_reddit(subreddit)
+        # Calculate posts to request from each file based on limit
+        posts_per_file = max(100, limit // max_files_to_process)
+        
+        all_posts = []
+        total_posts = 0
+        
+        # Process files sequentially to avoid excessive memory usage with multiple threads
+        # For large archives, sequential processing with smart sampling is often faster than
+        # parallel processing with full file reads
+        for file_path in files_to_process:
+            self.logger.info(f"Processing {os.path.basename(file_path)}")
+            df = _process_file_with_sampling(file_path, target_sample_size=posts_per_file)
+            
+            if df is not None and not df.empty:
+                all_posts.append(df)
+                total_posts += len(df)
+                
+                if total_posts >= limit:
+                    self.logger.info(f"Reached target of {limit} posts, stopping file processing")
+                    break
+        
+        if not all_posts:
+            self.logger.warning(f"No posts found in .zst files for r/{subreddit}, generating synthetic data")
+            return self._generate_synthetic_reddit(subreddit)
+        
+        # Combine results and sort by date
+        result_df = pd.concat(all_posts, ignore_index=True)
+        
+        if 'created_utc' in result_df.columns:
+            result_df = result_df.sort_values('created_utc', ascending=False).reset_index(drop=True)
+        
+        # Limit to requested number
+        result_df = result_df.head(limit)
+        
+        self.logger.info(f"Successfully loaded {len(result_df)} posts for r/{subreddit} from .zst files")
+        return result_df
     
     def compute_technical_features(
         self,
