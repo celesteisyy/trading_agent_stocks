@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 from dotenv import load_dotenv, find_dotenv
 from scipy import stats
 import zstandard as zstd
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+import concurrent.futures
 
 class DataProcessor:
     """
@@ -394,91 +395,122 @@ class DataProcessor:
         self.logger.warning("All DeFi data sources failed, returning empty DataFrame")
         return pd.DataFrame()
     
+
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
-        Load Reddit submissions from local ZST dumps for the specified subreddit in parallel,
-        returning a DataFrame with the same schema as the raw JSON.
+        1) First attempt: fetch the last 7 days of posts via PRAW (Reddit API).
+        2) Second attempt: fall back to decompressing local .zst dumps:
+        - Skip any file whose header is not valid zstd.
+        - Catch and skip corrupted files.
+        - Abort waiting after 30 seconds total.
+        3) Final fallback: generate synthetic posts for testing, matching the same
+        columns and overall DataFrame structure.
         """
-        # Determine submissions directory
-        possible_paths = [
+        # ——— 1. Try real‑time fetch via PRAW ———
+        if self.reddit:
+            try:
+                cutoff = datetime.now() - timedelta(days=7)
+                posts = []
+                for submission in self.reddit.subreddit(subreddit).new(limit=1000):
+                    created = datetime.fromtimestamp(submission.created_utc)
+                    if created < cutoff:
+                        break
+                    posts.append({
+                        'id':           submission.id,
+                        'title':        submission.title,
+                        'selftext':     submission.selftext,
+                        'created_utc':  created,
+                        'score':        submission.score,
+                        'num_comments': submission.num_comments,
+                        'url':          submission.url
+                    })
+                if posts:
+                    df = pd.DataFrame(posts)
+                    self.logger.info(f"Fetched {len(df)} posts from Reddit API (last 7 days).")
+                    return df.head(limit)
+            except Exception as e:
+                self.logger.warning(f"[PRAW] Failed to fetch real‑time data, falling back to .zst: {e}")
+
+        # ——— 2. Fall back to local .zst files ———
+        candidate_dirs = [
             os.path.join(os.path.dirname(__file__), "data", "reddit", "submissions"),
             "./data/reddit/submissions",
             "data/reddit/submissions",
             os.path.abspath(os.path.join("data", "reddit", "submissions"))
         ]
-        base_dir = next((p for p in possible_paths if os.path.isdir(p)), None)
+        base_dir = next((d for d in candidate_dirs if os.path.isdir(d)), None)
         if not base_dir:
-            self.logger.warning(f"Reddit submissions directory not found. Tried: {possible_paths}")
-            return pd.DataFrame()
+            self.logger.warning("[Data] Local Reddit directory not found; using synthetic data.")
+            return self._generate_synthetic_reddit(subreddit)
 
-        # List all .zst files
-        zst_files = [os.path.join(base_dir, f)
-                     for f in sorted(os.listdir(base_dir)) if f.lower().endswith('.zst')]
-        self.logger.info(f"Found {len(zst_files)} Reddit dump files to process")
+        zst_files = [
+            os.path.join(base_dir, f)
+            for f in sorted(os.listdir(base_dir))
+            if f.lower().endswith('.zst')
+        ]
+        self.logger.info(f"Found {len(zst_files)} .zst files in {base_dir}.")
 
         def _process_file(path):
             try:
-                # Magic‑header check
+                # Check magic‑header: skip if not a zstd file
                 with open(path, 'rb') as fh:
                     if fh.read(4) != b"\x28\xb5\x2f\xfd":
                         self.logger.warning(f"Skipping non‑zstd file: {path}")
                         return None
-                # Decompress and parse
+
+                # Decompress and parse JSON lines
                 dctx = zstd.ZstdDecompressor()
                 with open(path, 'rb') as compressed, \
-                     io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
+                    io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
+
                     posts = []
                     for raw in reader:
                         try:
                             post = json.loads(raw)
                         except json.JSONDecodeError:
                             continue
-                        if post.get('subreddit', '').lower() != subreddit.lower():
-                            continue
-                        posts.append(post)
+                        if post.get('subreddit', '').lower() == subreddit.lower():
+                            posts.append(post)
+
                 if not posts:
                     return None
-                # Normalize JSON list into DataFrame
+
                 return pd.json_normalize(posts)
+
+            except zstd.ZstdError as e:
+                # Skip corrupted zstd files
+                self.logger.error(f"Decompression failed for {path}: {e}")
+                return None
             except Exception as e:
-                self.logger.error(f"Error processing file {path}: {e}")
+                self.logger.error(f"Error processing {path}: {e}")
                 return None
 
-        # Parallel processing
         dfs = []
-        with ThreadPoolExecutor(max_workers=min(4, len(zst_files))) as executor:
-            futures = {executor.submit(_process_file, fp): fp for fp in zst_files}
-            for future in as_completed(futures):
-                part = future.result()
-                if part is not None and not part.empty:
-                    dfs.append(part)
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(zst_files))) as executor:
+            future_to_path = {executor.submit(_process_file, p): p for p in zst_files}
+            try:
+                # Wait up to 30 seconds total for all tasks
+                for future in concurrent.futures.as_completed(future_to_path, timeout=30):
+                    df_part = future.result()
+                    if df_part is not None and not df_part.empty:
+                        dfs.append(df_part)
+            except concurrent.futures.TimeoutError:
+                self.logger.warning("[Data] .zst decompression timed out; stopping further processing.")
 
-        if not dfs:
-            self.logger.warning("No valid Reddit posts loaded from local .zst files.")
-            return pd.DataFrame()
+        if dfs:
+            # Concatenate and clean up timestamp
+            df = pd.concat(dfs, ignore_index=True)
+            if 'created_utc' in df.columns:
+                df['created_utc'] = pd.to_datetime(df['created_utc'], unit='s')
+                df.sort_values('created_utc', inplace=True)
+                df.reset_index(drop=True, inplace=True)
+            self.logger.info(f"Loaded {len(df)} posts from local .zst files.")
+            return df.head(limit)
 
-        # Concatenate and finalize
-        df = pd.concat(dfs, ignore_index=True)
-        if 'created_utc' in df.columns:
-            df['created_utc'] = pd.to_datetime(df['created_utc'], unit='s')
-            df.sort_values('created_utc', inplace=True)
-            df.reset_index(drop=True, inplace=True)
-        self.logger.info(f"Loaded {len(df)} Reddit posts from {subreddit}")
-        return df
-    
-    def _generate_synthetic_reddit(self, subreddit: str) -> pd.DataFrame:
-        """Generate synthetic Reddit data for testing."""
-        dates = pd.date_range(self.start_date, self.end_date, freq='D')
-        df = pd.DataFrame({
-            'id': [f'syn_{i}' for i in range(len(dates))],
-            'title': [f'Synthetic {subreddit} Post {i}' for i in range(len(dates))],
-            'selftext': [f'This is synthetic content for testing. Day {i}' for i in range(len(dates))],
-            'created_utc': dates,
-            'score': np.random.randint(1, 100, size=len(dates)),
-            'num_comments': np.random.randint(0, 20, size=len(dates)),
-            'url': [f'https://reddit.com/r/{subreddit}/syn_{i}' for i in range(len(dates))],
-        })
-        return df
+        # ——— 3. Synthetic data fallback ———
+        self.logger.warning(f"[Data] No Reddit posts available; generating synthetic data for '{subreddit}'.")
+        return self._generate_synthetic_reddit(subreddit)
+
 
     
     def compute_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
