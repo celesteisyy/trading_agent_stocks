@@ -17,14 +17,9 @@ flowchart TD
     F --> G[A/B Testing and Sentiment Contribution Analysis]
     G --> H[Visualization and Reporting]
 
-    style A fill:#B3E5FC,stroke:#333,stroke-width:1px
-    style B fill:#FFE082,stroke:#333,stroke-width:1px
-    style C fill:#AED581,stroke:#333,stroke-width:1px
-    style D fill:#9575CD,stroke:#333,stroke-width:1px
-    style E fill:#4DB6AC,stroke:#333,stroke-width:1px
-    style F fill:#FF8A65,stroke:#333,stroke-width:1px
-    style G fill:#FFD54F,stroke:#333,stroke-width:1px
-    style H fill:#81D4FA,stroke:#333,stroke-width:1px
+    classDef darkText fill:#ffffff,stroke:#333,stroke-width:1px,color:#000;
+
+    class A,B,C,D,E,F,G,H darkText;
 ```
 
 
