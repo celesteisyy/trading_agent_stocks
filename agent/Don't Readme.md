@@ -11,7 +11,7 @@ This trading system analyzes sentiment from cryptocurrency discussions on Reddit
 - **Crypto-to-Tech Stock Correlation**: Automatically selects technology stocks with the highest correlation to cryptocurrency sentiment
 - **Advanced Sentiment Analysis**: Uses FinBERT transformer models for finance-specific sentiment analysis
 - **Multi-source Signal Integration**: Combines Reddit sentiment, technical indicators, and ML predictions with configurable weights
-- **Machine Learning Support**: Compatible with GRU/LSTM deep learning models and sklearn models
+- **Machine Learning Support**: Compatible with GRU deep learning models and sklearn models
 - **Comprehensive Technical Analysis**: Calculates SMA, EMA, RSI, MACD, Bollinger Bands, and other indicators
 - **Portfolio Simulation**: Simulates trading performance with transaction costs and trading rules
 - **Interactive Dashboard**: Visualizes performance metrics, sentiment trends, and trade signals

@@ -12,7 +12,7 @@ class AnalysisStrategy:
     Comprehensive analysis and strategy module that:
     1. Combines technical analysis, sentiment data, and ML predictions
     2. Generates trading signals with configurable weights
-    3. Enforces trading rules (holding periods, frequency limits)
+    3. Evaluates the contribution of sentiment analysis to strategy performance
     4. Supports multiple model types (GRU or sklearn)
     """
     
@@ -56,6 +56,10 @@ class AnalysisStrategy:
         self.model_type = model_type.lower()
         self.device = None
         
+        # Create a secondary model (without sentiment) for A/B testing
+        self.base_model = None
+        self.base_model_type = model_type.lower()
+        
         # Load model if provided
         if model_path and os.path.exists(model_path):
             self.load_model(model_path)
@@ -85,45 +89,73 @@ class AnalysisStrategy:
             self.logger.error(f"Failed to load model: {e}")
             self.model = None
     
-    def predict_with_model(self, price_series: pd.Series) -> int:
+    def load_base_model(self, model_path: str):
         """
-        Generate prediction signal using loaded model.
+        Load base model (without sentiment) for A/B comparison.
         
         Args:
-            price_series: Series of price data
-            
-        Returns:
-            Signal value: 1 (buy), -1 (sell), or 0 (hold)
+            model_path: Path to base model file
         """
-        if self.model is None:
-            return 0  # Neutral if no model
-            
-        if self.model_type == 'gru':
-            return self._predict_with_gru(price_series)
-        else:
-            return self._predict_with_sklearn(price_series)
+        try:
+            if self.base_model_type == 'sklearn':
+                with open(model_path, 'rb') as f:
+                    self.base_model = pickle.load(f)
+                self.logger.info(f"Loaded base sklearn model from {model_path}")
+            elif self.base_model_type == 'gru':
+                # Use same device as primary model
+                self.base_model = torch.load(model_path, map_location=self.device)
+                self.base_model.to(self.device).eval()
+                self.logger.info(f"Loaded base GRU model from {model_path}")
+        except Exception as e:
+            self.logger.error(f"Failed to load base model: {e}")
+            self.base_model = None
     
-    def _predict_with_gru(self, price_series: pd.Series) -> int:
+    def _predict_with_gru(self, price_series, sentiment_series=None, technical_indicators=None):
         """
-        Generate prediction using GRU model.
+        Generate prediction using GRU model with multiple features.
         
         Args:
             price_series: Series of price data
+            sentiment_series: Series of sentiment data (optional)
+            technical_indicators: DataFrame of technical indicators (optional)
             
         Returns:
             Signal value: 1 (buy), -1 (sell), or 0 (hold)
         """
         # Prepare input sequence (last seq_len values)
-        seq_vals = price_series.values[-self.seq_len:]
-        if len(seq_vals) < self.seq_len:
+        price_vals = price_series.values[-self.seq_len:]
+        if len(price_vals) < self.seq_len:
             # Pad with zeros if not enough data
-            seq_vals = np.pad(seq_vals, (self.seq_len - len(seq_vals), 0), 'constant')
+            price_vals = np.pad(price_vals, (self.seq_len - len(price_vals), 0), 'constant')
+        
+        # Initialize feature list with price data
+        features = [price_vals]
+        
+        # Add sentiment data if available
+        if sentiment_series is not None:
+            sent_vals = sentiment_series.values[-self.seq_len:]
+            if len(sent_vals) < self.seq_len:
+                sent_vals = np.pad(sent_vals, (self.seq_len - len(sent_vals), 0), 'constant')
+            features.append(sent_vals)
+        
+        # Add technical indicators if available
+        if technical_indicators is not None:
+            # Select key technical indicators
+            tech_indicators = ['rsi_14', 'macd', 'bb_upper', 'bb_lower', 'sma_20']
+            for indicator in tech_indicators:
+                if indicator in technical_indicators.columns:
+                    tech_vals = technical_indicators[indicator].values[-self.seq_len:]
+                    if len(tech_vals) < self.seq_len:
+                        tech_vals = np.pad(tech_vals, (self.seq_len - len(tech_vals), 0), 'constant')
+                    features.append(tech_vals)
+        
+        # Stack features into a 2D array [seq_len, num_features]
+        feature_array = np.column_stack(features)
         
         # Convert to tensor
         seq = (
-            torch.tensor(seq_vals, dtype=torch.float32)
-                .unsqueeze(0)      # batch dim
-                .unsqueeze(-1)     # feature dim
+            torch.tensor(feature_array, dtype=torch.float32)
+                .unsqueeze(0)      # Add batch dimension [1, seq_len, num_features]
                 .to(self.device)
         )
         
@@ -142,12 +174,14 @@ class AnalysisStrategy:
         else:
             return 0
     
-    def _predict_with_sklearn(self, price_series: pd.Series) -> int:
+    def _predict_with_sklearn(self, price_series, sentiment_series=None, technical_indicators=None):
         """
-        Generate prediction using sklearn model.
+        Generate prediction using sklearn model with multiple features.
         
         Args:
             price_series: Series of price data
+            sentiment_series: Series of sentiment data (optional)
+            technical_indicators: DataFrame of technical indicators (optional)
             
         Returns:
             Signal value: 1 (buy), -1 (sell), or 0 (hold)
@@ -155,9 +189,25 @@ class AnalysisStrategy:
         # Get last price
         last_val = float(price_series.iloc[-1])
         
+        # Create feature vector
+        features = [last_val]
+        
+        # Add sentiment if available
+        if sentiment_series is not None and not sentiment_series.empty:
+            latest_sentiment = sentiment_series.iloc[-1]
+            features.append(float(latest_sentiment))
+        
+        # Add technical indicators if available
+        if technical_indicators is not None and not technical_indicators.empty:
+            tech_indicators = ['rsi_14', 'macd', 'bb_upper', 'bb_lower', 'sma_20']
+            for indicator in tech_indicators:
+                if indicator in technical_indicators.columns:
+                    latest_value = technical_indicators[indicator].iloc[-1]
+                    features.append(float(latest_value))
+        
         # Predict next price
         try:
-            pred = self.model.predict([[last_val]])[0]
+            pred = self.model.predict([features])[0]
             
             # Convert to signal
             if pred > last_val * 1.01:  # 1% threshold
@@ -213,14 +263,6 @@ class AnalysisStrategy:
         df['bb_upper'] = rolling_mean + 2 * rolling_std
         df['bb_lower'] = rolling_mean - 2 * rolling_std
         
-        # ATR (Average True Range)
-        if all(col in df.columns for col in ['High', 'Low']):
-            high_low = df['High'] - df['Low']
-            high_close = (df['High'] - df['Close'].shift()).abs()
-            low_close = (df['Low'] - df['Close'].shift()).abs()
-            true_range = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-            df['atr_14'] = true_range.rolling(window=14).mean()
-        
         return df
     
     def generate_technical_signals(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -262,13 +304,22 @@ class AnalysisStrategy:
         signals.loc[sma_up, 'sma_sig'] = 1
         signals.loc[sma_down, 'sma_sig'] = -1
         
+        # Combined signal
+        signals['combined_sig'] = signals.sum(axis=1)
+        # Normalize to -1, 0, 1
+        signals['combined_sig'] = signals['combined_sig'].apply(
+            lambda x: 1 if x > 0 else (-1 if x < 0 else 0)
+        )
+        
         return signals
     
     def generate_strategy_signals(
         self,
         price_df: pd.DataFrame,
         sentiment_df: pd.DataFrame,
-        technical_signals_df: Optional[pd.DataFrame] = None
+        technical_signals_df: Optional[pd.DataFrame] = None,
+        macro_df: Optional[pd.DataFrame] = None,
+        defi_df: Optional[pd.DataFrame] = None
     ) -> pd.DataFrame:
         """
         Generate combined trading signals from multiple sources.
@@ -277,6 +328,8 @@ class AnalysisStrategy:
             price_df: DataFrame with price data
             sentiment_df: DataFrame with sentiment data
             technical_signals_df: Optional DataFrame with technical signals
+            macro_df: Optional DataFrame with macroeconomic data
+            defi_df: Optional DataFrame with DeFi market data
             
         Returns:
             DataFrame with signals and trading orders
@@ -292,7 +345,15 @@ class AnalysisStrategy:
         df['price'] = price_df['Close']
         df['sentiment'] = np.nan
         
-        # 3. Align sentiment data with price dates
+        # 3. Calculate technical indicators if not provided
+        technical_indicators = None
+        if 'rsi_14' not in price_df.columns:
+            # Calculate technical indicators if not already in price_df
+            technical_indicators = self.calculate_technical_indicators(price_df)
+        else:
+            technical_indicators = price_df
+        
+        # 4. Align sentiment data with price dates
         sentiment_dates = sentiment_df.index
         for date in df.index:
             # Find the closest sentiment date before or on the current date
@@ -301,21 +362,33 @@ class AnalysisStrategy:
                 closest_date = closest_date[-1]
                 df.loc[date, 'sentiment'] = sentiment_df.loc[closest_date, 'avg_compound']
         
-        # 4. Fill missing sentiment values with previous value
+        # 5. Fill missing sentiment values with previous value
         df['sentiment'] = df['sentiment'].fillna(method='ffill')
         
-        # 5. Calculate sentiment change
+        # 6. Calculate sentiment change
         df['sentiment_change'] = df['sentiment'].diff()
         
-        # 6. Generate model-based prediction signals
+        # 7. Generate model-based prediction signals with multiple features
         df['model_signal'] = 0
         if self.model is not None:
+            sentiment_series = df['sentiment']
+            
             # For each day, predict using appropriate window of data
             for i in range(min(self.seq_len, 5), len(df)):
-                window = df['price'].iloc[i-min(self.seq_len, 5):i]
-                df.iloc[i, df.columns.get_loc('model_signal')] = self.predict_with_model(window)
+                # Extract feature windows
+                price_window = df['price'].iloc[i-min(self.seq_len, 5):i]
+                sentiment_window = sentiment_series.iloc[i-min(self.seq_len, 5):i]
+                tech_window = technical_indicators.iloc[i-min(self.seq_len, 5):i] if technical_indicators is not None else None
+                
+                # Predict with multiple features
+                if self.model_type == 'gru':
+                    df.iloc[i, df.columns.get_loc('model_signal')] = self._predict_with_gru(
+                        price_window, sentiment_window, tech_window)
+                else:
+                    df.iloc[i, df.columns.get_loc('model_signal')] = self._predict_with_sklearn(
+                        price_window, sentiment_window, tech_window)
         
-        # 7. Generate sentiment-based signals
+        # 8. Generate sentiment-based signals
         df['sentiment_signal'] = 0
         
         # Buy signal: Sentiment above threshold and significant positive change
@@ -332,7 +405,7 @@ class AnalysisStrategy:
         )
         df.loc[sell_condition, 'sentiment_signal'] = -1
         
-        # 8. Incorporate technical signals if provided
+        # 9. Incorporate technical signals if provided
         df['technical_signal'] = 0
         if technical_signals_df is not None:
             # Align technical signals with our index
@@ -350,7 +423,7 @@ class AnalysisStrategy:
             elif 'combined_sig' in aligned_tech.columns:
                 df['technical_signal'] = aligned_tech['combined_sig']
         
-        # 9. Calculate weighted combination of signals
+        # 10. Calculate weighted combination of signals
         model_weight = max(0, 1 - self.sentiment_weight - self.technical_weight)
         df['raw_signal'] = (
             self.sentiment_weight * df['sentiment_signal'] + 
@@ -358,12 +431,12 @@ class AnalysisStrategy:
             model_weight * df['model_signal']
         )
         
-        # 10. Discretize to -1, 0, 1
+        # 11. Discretize to -1, 0, 1
         df['raw_signal'] = df['raw_signal'].apply(
             lambda x: 1 if x > 0.3 else (-1 if x < -0.3 else 0)
         )
         
-        # 11. Apply trading rules
+        # 12. Apply trading rules
         df['order'] = 0
         last_trade = None
         trades = []
@@ -389,90 +462,154 @@ class AnalysisStrategy:
         
         return df[['raw_signal', 'sentiment_signal', 'technical_signal', 'model_signal', 
                   'order', 'price', 'sentiment', 'sentiment_change']]
-
-
-if __name__ == '__main__':
-    # Setup basic logging
-    logging.basicConfig(level=logging.INFO)
     
-    # Test the analysis strategy with sample data
-    import matplotlib.pyplot as plt
-    from pandas import date_range
+    def generate_baseline_signals(
+        self,
+        price_df: pd.DataFrame,
+        technical_signals_df: Optional[pd.DataFrame] = None
+    ) -> pd.DataFrame:
+        """
+        Generate baseline trading signals without using sentiment data.
+        Used for A/B testing to measure sentiment contribution.
+        
+        Args:
+            price_df: DataFrame with price data
+            technical_signals_df: Optional DataFrame with technical signals
+            
+        Returns:
+            DataFrame with baseline signals and trading orders
+        """
+        # Create a dummy sentiment DataFrame filled with zeros
+        dates = price_df.index
+        dummy_sentiment = pd.DataFrame({
+            'avg_compound': np.zeros(len(dates))
+        }, index=dates)
+        
+        # Save original sentiment weight
+        original_weight = self.sentiment_weight
+        
+        # Set sentiment weight to 0 for baseline
+        self.sentiment_weight = 0.0
+        
+        # Generate signals without sentiment influence
+        baseline_signals = self.generate_strategy_signals(
+            price_df=price_df,
+            sentiment_df=dummy_sentiment,
+            technical_signals_df=technical_signals_df
+        )
+        
+        # Restore original sentiment weight
+        self.sentiment_weight = original_weight
+        
+        return baseline_signals
     
-    # Create sample data
-    dates = date_range('2023-01-01', periods=100, freq='D')
+    def evaluate_sentiment_contribution(
+        self,
+        price_df: pd.DataFrame,
+        sentiment_df: pd.DataFrame,
+        technical_signals_df: Optional[pd.DataFrame] = None,
+        portfolio_manager=None
+    ) -> Dict:
+        """
+        Evaluate the contribution of sentiment analysis to strategy performance.
+        
+        Args:
+            price_df: DataFrame with price data
+            sentiment_df: DataFrame with sentiment data
+            technical_signals_df: Optional DataFrame with technical signals
+            portfolio_manager: PortfolioManager instance for backtesting
+            
+        Returns:
+            Dictionary with sentiment contribution analysis
+        """
+        self.logger.info("Evaluating sentiment contribution to strategy performance...")
+        
+        # Generate signals with sentiment
+        signals_with_sentiment = self.generate_strategy_signals(
+            price_df=price_df,
+            sentiment_df=sentiment_df,
+            technical_signals_df=technical_signals_df
+        )
+        
+        # Generate baseline signals without sentiment
+        baseline_signals = self.generate_baseline_signals(
+            price_df=price_df,
+            technical_signals_df=technical_signals_df
+        )
+        
+        # If portfolio manager is provided, run backtests
+        if portfolio_manager:
+            # Backtest with sentiment
+            portfolio_with_sentiment = portfolio_manager.backtest(signals_with_sentiment)
+            metrics_with_sentiment = portfolio_manager.compute_performance(portfolio_with_sentiment)
+            
+            # Backtest without sentiment
+            portfolio_baseline = portfolio_manager.backtest(baseline_signals)
+            metrics_baseline = portfolio_manager.compute_performance(portfolio_baseline)
+            
+            # Calculate differences in key metrics
+            return_diff = metrics_with_sentiment['total_return'] - metrics_baseline['total_return']
+            sharpe_diff = metrics_with_sentiment['sharpe_ratio'] - metrics_baseline['sharpe_ratio']
+            drawdown_diff = metrics_baseline['max_drawdown'] - metrics_with_sentiment['max_drawdown']
+            
+            # Calculate percentage contribution
+            if metrics_with_sentiment['total_return'] != 0:
+                pct_contribution = return_diff / abs(metrics_with_sentiment['total_return']) * 100
+            else:
+                pct_contribution = 0
+            
+            # Identify trades that are uniquely due to sentiment
+            sentiment_driven_trades = self._identify_sentiment_driven_trades(
+                signals_with_sentiment, 
+                baseline_signals
+            )
+            
+            # Prepare results
+            contribution_analysis = {
+                'return_difference': return_diff,
+                'sharpe_difference': sharpe_diff,
+                'drawdown_difference': drawdown_diff,
+                'percentage_contribution': pct_contribution,
+                'sentiment_driven_trades': sentiment_driven_trades,
+                'portfolio_with_sentiment': portfolio_with_sentiment,
+                'portfolio_baseline': portfolio_baseline,
+                'metrics_with_sentiment': metrics_with_sentiment,
+                'metrics_baseline': metrics_baseline
+            }
+            
+            self.logger.info(f"Sentiment contribution: {return_diff:.2%} to total return, {pct_contribution:.2f}% of strategy performance")
+            
+            return contribution_analysis
+        else:
+            # Without portfolio manager, just return the signals
+            return {
+                'signals_with_sentiment': signals_with_sentiment,
+                'baseline_signals': baseline_signals
+            }
     
-    # Price data
-    close = 100 + np.cumsum(np.random.randn(len(dates)))
-    high = close + np.random.rand(len(dates)) * 5
-    low = close - np.random.rand(len(dates)) * 5
-    open_price = close.shift(1).fillna(close[0])
-    volume = np.random.randint(1000, 10000, size=len(dates))
-    
-    price_df = pd.DataFrame({
-        'Open': open_price,
-        'High': high,
-        'Low': low,
-        'Close': close,
-        'Volume': volume
-    }, index=dates)
-    
-    # Sentiment data
-    sentiment = np.random.normal(0.2, 0.3, size=len(dates))
-    # Add some trend and noise
-    for i in range(1, len(sentiment)):
-        sentiment[i] = 0.8 * sentiment[i-1] + 0.2 * sentiment[i]
-    
-    sentiment_df = pd.DataFrame({
-        'avg_compound': sentiment
-    }, index=dates)
-    
-    # Create the analysis strategy
-    strategy = AnalysisStrategy(
-        sentiment_threshold=0.2,
-        sentiment_change_threshold=0.05,
-        min_holding_period=3,
-        max_trades_per_week=2
-    )
-    
-    # Calculate technical indicators
-    indicators_df = strategy.calculate_technical_indicators(price_df)
-    
-    # Generate technical signals
-    tech_signals = strategy.generate_technical_signals(indicators_df)
-    
-    # Generate combined strategy signals
-    signals_df = strategy.generate_strategy_signals(price_df, sentiment_df, tech_signals)
-    
-    # Print trading statistics
-    trades = signals_df[signals_df['order'] != 0]
-    print(f"Generated {len(trades)} trades")
-    print(f"Buy signals: {len(trades[trades['order'] > 0])}")
-    print(f"Sell signals: {len(trades[trades['order'] < 0])}")
-    
-    # Plot results
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), sharex=True)
-    
-    # Plot price
-    ax1.plot(signals_df.index, signals_df['price'], label='Price')
-    
-    # Plot buy signals
-    buys = signals_df[signals_df['order'] > 0]
-    ax1.scatter(buys.index, buys['price'], marker='^', color='green', s=100, label='Buy')
-    
-    # Plot sell signals
-    sells = signals_df[signals_df['order'] < 0]
-    ax1.scatter(sells.index, sells['price'], marker='v', color='red', s=100, label='Sell')
-    
-    ax1.set_title('Price and Trading Signals')
-    ax1.set_ylabel('Price')
-    ax1.legend()
-    
-    # Plot sentiment
-    ax2.plot(signals_df.index, signals_df['sentiment'], label='Sentiment')
-    ax2.set_title('Sentiment')
-    ax2.set_ylabel('Sentiment Score')
-    ax2.set_xlabel('Date')
-    
-    plt.tight_layout()
-    plt.show()
+    def _identify_sentiment_driven_trades(
+        self,
+        signals_with_sentiment: pd.DataFrame,
+        baseline_signals: pd.DataFrame
+    ) -> pd.DataFrame:
+        """
+        Identify trades that are uniquely driven by sentiment signals.
+        
+        Args:
+            signals_with_sentiment: Signals generated with sentiment
+            baseline_signals: Signals generated without sentiment
+            
+        Returns:
+            DataFrame with sentiment-driven trades
+        """
+        # Find dates where orders differ
+        diff_mask = signals_with_sentiment['order'] != baseline_signals['order']
+        sentiment_trades = signals_with_sentiment[diff_mask].copy()
+        
+        # Add baseline order for comparison
+        sentiment_trades['baseline_order'] = baseline_signals.loc[diff_mask, 'order']
+        
+        # Filter to trades where sentiment order is non-zero
+        sentiment_trades = sentiment_trades[sentiment_trades['order'] != 0]
+        
+        return sentiment_trades

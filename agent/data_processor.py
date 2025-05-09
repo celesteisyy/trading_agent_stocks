@@ -8,6 +8,8 @@ import time
 import yfinance as yf
 import ccxt
 import praw
+import zstandard
+import io, json
 from datetime import datetime, timedelta
 from dotenv import load_dotenv, find_dotenv
 from scipy import stats
@@ -35,6 +37,7 @@ class DataProcessor:
         self.end_date = end_date
         self.interval = interval
         self.logger = logging.getLogger(__name__)
+        self.zst_dir = os.getenv('PUSHSHIFT_ZST_DIR', '/path/to/pushshift_dumps/submissions')
         
         # Load environment variables
         env_path = find_dotenv("fin580.env", raise_error_if_not_found=True)
@@ -109,6 +112,29 @@ class DataProcessor:
             self.logger.error(f"Failed to fetch {sector} tickers: {e}")
             return []
     
+    def _preprocess_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Clean and prepare a raw price-DataFrame for downstream use:
+         - Flatten a MultiIndex column into single-level columns
+         - Ensure the index is a DatetimeIndex
+         - Sort by date
+        """
+        import pandas as pd
+
+        # 1) If it's a multi‑ticker frame, flatten columns ("AAPL_Close", "MSFT_Open", …)
+        if isinstance(df.columns, pd.MultiIndex):
+            df = df.copy()
+            df.columns = ['_'.join(col).strip() for col in df.columns.values]
+
+        # 2) Make sure the index is datetime
+        if not isinstance(df.index, pd.DatetimeIndex):
+            df.index = pd.to_datetime(df.index)
+
+        # 3) Sort by date, drop any exact duplicates
+        df = df.sort_index().loc[~df.index.duplicated(keep='first')]
+
+        return df
+
     def load_stock_prices(self, tickers: List[str]) -> pd.DataFrame:
         """
         Load stock price data with fallbacks:
@@ -294,52 +320,72 @@ class DataProcessor:
     
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
-        Load Reddit posts from specified subreddit.
-        
+        Load Reddit submissions from local ZST dumps for the CryptoCurrency subreddit.
+        Only processes the folders RC_2024-06 through RC_2024-12 under ../data.
+
         Args:
-            subreddit: Subreddit name (e.g., "CryptoCurrency")
-            limit: Maximum number of posts to fetch
-            
+            subreddit: target subreddit name (ignored; always 'CryptoCurrency')
+            limit: unused (kept for signature compatibility)
+
         Returns:
-            DataFrame with Reddit posts
+            DataFrame of all posts in r/CryptoCurrency sorted by timestamp.
         """
-        if not self.reddit:
-            # Generate synthetic data if Reddit API not available
-            self.logger.warning("Reddit API not available, generating synthetic data")
-            return self._generate_synthetic_reddit(subreddit)
-        
-        try:
-            self.logger.info(f"Fetching posts from r/{subreddit}...")
-            records = []
-            
-            # Fetch posts from specified date range
-            after_ts = int(pd.to_datetime(self.start_date).timestamp())
-            before_ts = int(pd.to_datetime(self.end_date).timestamp())
-            
-            for post in self.reddit.subreddit(subreddit).new(limit=limit):
-                if after_ts <= post.created_utc <= before_ts:
-                    records.append({
-                        "id": post.id,
-                        "title": post.title,
-                        "selftext": getattr(post, "selftext", ""),
-                        "created_utc": datetime.fromtimestamp(post.created_utc),
-                        "score": post.score,
-                        "num_comments": post.num_comments,
-                        "url": post.url,
-                    })
-            
-            if not records:
-                self.logger.warning(f"No posts found in r/{subreddit} for date range")
-                return self._generate_synthetic_reddit(subreddit)
-                
-            result = pd.DataFrame(records)
-            self.logger.info(f"Fetched {len(result)} posts from r/{subreddit}")
-            return result
-            
-        except Exception as e:
-            self.logger.error(f"Failed to fetch Reddit posts: {e}")
-            return self._generate_synthetic_reddit(subreddit)
-    
+        import io, json
+        import zstandard as zstd
+
+        records = []
+        # Base directory where monthly dumps live
+        base_dir = os.path.abspath(os.path.join(__file__, '..', '..', 'data'))
+
+        # Loop through each RC_YYYY-MM folder in ../data
+        for folder in os.listdir(base_dir):
+            if not folder.startswith('RC_'):
+                continue
+            year_month = folder[3:]  # e.g. "2024-06"
+            # Only June → December 2024
+            if year_month < '2024-06' or year_month > '2024-12':
+                continue
+
+            path = os.path.join(base_dir, folder)
+            # Within each folder, find the .zst files
+            for fname in os.listdir(path):
+                if not fname.endswith('.zst'):
+                    continue
+                zst_path = os.path.join(path, fname)
+
+                # Stream-decompress and read JSON lines one by one
+                dctx = zstd.ZstdDecompressor()
+                with open(zst_path, 'rb') as compressed, \
+                    io.TextIOWrapper(dctx.stream_reader(compressed), encoding='utf-8') as reader:
+                    for line in reader:
+                        try:
+                            post = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        # Only keep posts from r/CryptoCurrency
+                        if post.get('subreddit', '').lower() != 'cryptocurrency':
+                            continue
+                        # Append the fields we need
+                        records.append({
+                            'id': post.get('id'),
+                            'title': post.get('title'),
+                            'selftext': post.get('selftext', ''),
+                            'created_utc': pd.to_datetime(post.get('created_utc', 0), unit='s'),
+                            'score': post.get('score'),
+                            'num_comments': post.get('num_comments'),
+                            'url': post.get('url')
+                        })
+
+        # Build final DataFrame
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df = df.sort_values('created_utc').reset_index(drop=True)
+        else:
+            # Return an empty frame with the expected columns if nothing was found
+            df = pd.DataFrame(columns=[
+                'id','title','selftext','created_utc','score','num_comments','url'
+            ])
+        return df
     
     def _generate_synthetic_reddit(self, subreddit: str) -> pd.DataFrame:
         """Generate synthetic Reddit data for testing."""
@@ -354,39 +400,7 @@ class DataProcessor:
             'url': [f'https://reddit.com/r/{subreddit}/syn_{i}' for i in range(len(dates))],
         })
         return df
-    
-    def _preprocess_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Clean and prepare DataFrame for analysis.
-        
-        - Flatten MultiIndex columns
-        - Ensure datetime index
-        - Handle missing values
-        - Remove outliers
-        
-        Args:
-            df: DataFrame to preprocess
-            
-        Returns:
-            Preprocessed DataFrame
-        """
-        # Ensure datetime index
-        if not isinstance(df.index, pd.DatetimeIndex):
-            df.index = pd.to_datetime(df.index)
-        
-        # Sort index
-        df = df.sort_index()
-        
-        # Handle missing values
-        df = df.ffill()
-        
-        # Remove outliers (z-score method)
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        if len(numeric_cols) > 0:
-            z_scores = np.abs(stats.zscore(df[numeric_cols], nan_policy='omit'))
-            df = df[(z_scores < 3).all(axis=1)]
-        
-        return df
+
     
     def compute_technical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -398,23 +412,57 @@ class DataProcessor:
         Returns:
             DataFrame with technical indicators
         """
-        # Ensure we have a Close column
-        if 'Close' not in df.columns:
-            if isinstance(df.columns, pd.MultiIndex):
-                # Handle MultiIndex columns
-                ticker = df.columns.levels[0][0]
-                close_col = (ticker, 'Close')
-                if close_col in df.columns:
-                    close = df[close_col].copy()
-                    # Flatten columns for simplicity
-                    df = df.copy()
-                    df.columns = [f"{col[0]}_{col[1]}" for col in df.columns]
-                    df['Close'] = close
-                else:
-                    raise ValueError("DataFrame must have a 'Close' column")
-            else:
-                raise ValueError("DataFrame must have a 'Close' column")
+    def compute_technical_features(self, df: pd.DataFrame, ticker: str = None) -> pd.DataFrame:
+        """
+        Compute technical indicators for price data.
         
+        Args:
+            df: DataFrame with price data (must have 'Close' column)
+            ticker: Optional ticker symbol to select specific close column when multiple exist
+            
+        Returns:
+            DataFrame with technical indicators
+        """
+        # Build a mapping from lowercase column names to original names
+        lower_to_orig = {col.lower(): col for col in df.columns}
+
+        # Determine which original column to use as Close
+        if 'close' in lower_to_orig:
+            close_orig = lower_to_orig['close']
+        else:
+            # Find all columns ending with "_close" (case-insensitive)
+            candidates = [
+                orig for low, orig in lower_to_orig.items()
+                if low.endswith('_close')
+            ]
+            
+            if ticker is not None:
+                # If ticker is provided, look for that specific ticker's close column
+                ticker_close = f"{ticker}_Close"
+                if ticker_close in df.columns:
+                    close_orig = ticker_close
+                else:
+                    raise ValueError(f"Could not find close column for ticker {ticker}")
+            elif len(candidates) == 1:
+                close_orig = candidates[0]
+            elif len(candidates) > 1:
+                # If multiple close columns, use the first ticker's close column
+                first_ticker = candidates[0].split('_')[0]
+                self.logger.warning(
+                    f"Found multiple '_close' columns: {candidates!r}. "
+                    f"Using {first_ticker}'s close column by default."
+                )
+                close_orig = candidates[0]
+            else:
+                raise ValueError(
+                    "DataFrame must have one column named 'Close' (any case) or "
+                    "exactly one column ending with '_close' (any case)."
+                )
+
+        # Copy the DataFrame and assign the selected column to 'Close'
+        df = df.copy()
+        df['Close'] = df[close_orig]
+    
         # Simple technical features
         result = df.copy()
         
