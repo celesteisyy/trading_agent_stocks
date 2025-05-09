@@ -45,12 +45,12 @@ class TradingSystem:
     
     def select_stocks_by_sentiment(self) -> List[str]:
         """
-        Select technology stocks with highest correlation to crypto sentiment.
+        Select technology stocks from S&P 500 with highest correlation to crypto sentiment.
         
         Returns:
             List of selected ticker symbols
         """
-        self.logger.info("Selecting stocks based on crypto sentiment correlation...")
+        self.logger.info("Selecting S&P 500 tech stocks based on crypto sentiment correlation...")
         
         # Calculate selection period
         lookback_days = 180  # Use 6 months of data for correlation analysis
@@ -63,15 +63,22 @@ class TradingSystem:
             end_date=self.config['end_date']
         )
         
-        # Get technology sector stocks
-        tech_tickers = data_processor.get_tickers_by_sector("Technology")
-        if not tech_tickers:
-            self.logger.warning("No technology tickers found, using default tickers")
-            return ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD']
+        # Get S&P 500 technology stocks
+        sp500_tech_stocks = data_processor.get_sp500_tech_stocks()
+        
+        if not sp500_tech_stocks:
+            self.logger.warning("No S&P 500 tech stocks found, using default tickers")
+            return ['AAPL', 'MSFT', 'GOOG', 'NVDA', 'AMD']
+        
+
+        # Create a combined list, prioritizing S&P 500 tech stocks
+        tech_tickers = list(sp500_tech_stocks)
+        
         
         # Limit to 30 stocks for initial analysis to avoid API rate limits
         if len(tech_tickers) > 30:
-            self.logger.info(f"Limiting initial analysis to 30 tech stocks")
+            self.logger.info(f"Limiting initial analysis to 30 tech stocks, prioritizing S&P 500 members")
+            # Ensure we preserve the S&P 500 stocks at the beginning of the list
             tech_tickers = tech_tickers[:30]
         
         # Load Reddit data
@@ -105,7 +112,20 @@ class TradingSystem:
                     try:
                         # Extract close price for ticker
                         if isinstance(price_df.columns, pd.MultiIndex):
-                            close_series = price_df[(ticker, 'Close')]
+                            if (ticker, 'Close') in price_df.columns:
+                                close_series = price_df[(ticker, 'Close')]
+                            else:
+                                # Try lowercase 'close'
+                                potential_columns = [col for col in price_df.columns if col[0] == ticker]
+                                if potential_columns:
+                                    for col in potential_columns:
+                                        if col[1].lower() == 'close':
+                                            close_series = price_df[col]
+                                            break
+                                    else:
+                                        raise KeyError(f"No Close column found for {ticker}")
+                                else:
+                                    raise KeyError(f"No columns found for {ticker}")
                         else:
                             # Single ticker case
                             close_series = price_df['Close']
@@ -114,7 +134,7 @@ class TradingSystem:
                         returns = close_series.pct_change().dropna()
                         
                         # Ensure date formats match for joining
-                        sentiment_dates = pd.to_datetime(daily_sentiment['date'])
+                        sentiment_dates = pd.to_datetime(daily_sentiment['date']) if 'date' in daily_sentiment.columns else daily_sentiment.index
                         sentiment_values = daily_sentiment['avg_compound'].values
                         sentiment_series = pd.Series(
                             sentiment_values, 
@@ -142,12 +162,12 @@ class TradingSystem:
         num_stocks = int(self.config.get('num_stocks', 5))
         selected_tickers = [ticker for ticker, corr in sorted_correlations[:num_stocks]]
         
-        # If no correlations were found, use default tickers
+        # If no correlations were found, use default S&P 500 tech stocks
         if not selected_tickers:
-            self.logger.warning("No correlation-based tickers found, using default tickers")
-            selected_tickers = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD']
+            self.logger.warning("No correlation-based tickers found, using default S&P 500 tech stocks")
+            selected_tickers = ['AAPL', 'MSFT', 'GOOG', 'NVDA', 'AMD']
         
-        self.logger.info(f"Selected {len(selected_tickers)} stocks with highest correlation: {selected_tickers}")
+        self.logger.info(f"Selected {len(selected_tickers)} S&P 500 tech stocks with highest correlation: {selected_tickers}")
         
         return selected_tickers
     
@@ -166,11 +186,9 @@ class TradingSystem:
 
         # Ensure we have at least some default tickers
         if not tickers:
-            self.logger.warning("No tickers selected or specified, using default tickers")
-            tickers = ['AAPL', 'MSFT', 'GOOGL', 'NVDA', 'AMD']
+            self.logger.warning("No tickers selected or specified, using default S&P 500 tech stocks")
+            tickers = ['AAPL', 'MSFT', 'GOOG', 'NVDA', 'AMD']  # DEFAULT S&P 500 tech stocks
             self.config['tickers'] = tickers
-
-        self.logger.info(f"Trading analysis will use tickers: {tickers}")
 
         # 2. Initialize core components
         data_processor = DataProcessor(

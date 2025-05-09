@@ -78,38 +78,75 @@ class DataProcessor:
             self.logger.warning("FMP_API_KEY not set in fin580.env")
         self._FMP_BASE_URL = "https://financialmodelingprep.com/api/v3"
     
-    def get_tickers_by_sector(self, sector: str) -> List[str]:
+
+    def get_sp500_tech_stocks(self) -> List[str]:
         """
-        Fetch all tickers in a given GICS sector via FinancialModelingPrep.
-        
-        Args:
-            sector: Sector name (e.g., "Technology")
-            
+        Get all stocks in the S&P 500 technology sector.
+
+        Tries the following methods:
+        1. Fetch from the FMP API.
+        2. If the API call fails, falls back to a hard‑coded list of common tech stocks.
+
         Returns:
-            List of ticker symbols
+            List[str]: A list of S&P 500 technology sector ticker symbols.
         """
-        if not self.fmp_api_key:
-            self.logger.error("FMP_API_KEY required to get tickers by sector")
-            return []
-            
-        url = f"{self._FMP_BASE_URL}/stock-screener"
-        params = {
-            "sector": sector,
-            "limit": 1000,
-            "apikey": self.fmp_api_key
-        }
+        self.logger.info("Fetching S&P 500 technology sector stocks")
+        sp500_tech_stocks = []
         
-        try:
-            self.logger.info(f"Fetching {sector} sector tickers...")
-            resp = requests.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            tickers = [item["symbol"] for item in data]
-            self.logger.info(f"Found {len(tickers)} tickers in {sector} sector")
-            return tickers
-        except Exception as e:
-            self.logger.error(f"Failed to fetch {sector} tickers: {e}")
-            return []
+        # FMP API
+        if self.fmp_api_key:
+            try:
+                url = f"{self._FMP_BASE_URL}/sp500_constituent?apikey={self.fmp_api_key}"
+                resp = requests.get(url, timeout=10)
+                resp.raise_for_status()
+                sp500_stocks = resp.json()
+                
+                sp500_tech_stocks = [
+                    stock['symbol'] for stock in sp500_stocks
+                    if stock['sector'].lower() in ['technology', 'information technology', 'it']
+                ]
+                
+                self.logger.info(f"Successfully fetched {len(sp500_tech_stocks)} S&P 500 tech stocks from API")
+                return sp500_tech_stocks
+            except Exception as e:
+                self.logger.warning(f"Failed to fetch S&P 500 tech stocks from API: {e}")
+        
+        default_tech_stocks = [
+            'AAPL',  # Apple
+            'MSFT',  # Microsoft
+            'NVDA',  # NVIDIA
+            'GOOGL', # Alphabet (Google) Class A
+            'GOOG',  # Alphabet (Google) Class C
+            'META',  # Meta Platforms (Facebook)
+            'AVGO',  # Broadcom
+            'ADBE',  # Adobe
+            'CRM',   # Salesforce
+            'CSCO',  # Cisco
+            'ORCL',  # Oracle
+            'ACN',   # Accenture
+            'INTC',  # Intel
+            'IBM',   # IBM
+            'TXN',   # Texas Instruments
+            'AMD',   # Advanced Micro Devices
+            'QCOM',  # Qualcomm
+            'AMAT',  # Applied Materials
+            'ADI',   # Analog Devices
+            'MU',    # Micron Technology
+            'NOW',   # ServiceNow
+            'INTU',  # Intuit
+            'PYPL',  # PayPal
+            'FISV',  # Fiserv
+            'LRCX',  # Lam Research
+            'ADSK',  # Autodesk
+            'SNPS',  # Synopsys
+            'KLAC',  # KLA Corporation
+            'CDNS',  # Cadence Design Systems
+            'NXPI',  # NXP Semiconductors
+        ]
+        
+        self.logger.info(f"Using default list of {len(default_tech_stocks)} S&P 500 tech stocks")
+        return default_tech_stocks
+
     
     def _preprocess_dataframe(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -358,7 +395,7 @@ class DataProcessor:
     def load_reddit_posts(self, subreddit: str, limit: int = 500) -> pd.DataFrame:
         """
         Load Reddit submissions from local ZST dumps for the specified subreddit.
-        Processes files named 'RS_YYYY-MM.zst' from 2023-12 through 2024-12 under ./data/reddit/submissions.
+        Processes files named 'RS_YYYY-MM.zst' from 2023-12 through 2024-12.
 
         Args:
             subreddit: target subreddit name
@@ -371,29 +408,49 @@ class DataProcessor:
         import zstandard as zstd
 
         records = []
-        # Base directory where the dumps live
-        base_dir = "./data/reddit/submissions"
         
-        # Ensure the directory exists
-        if not os.path.exists(base_dir):
-            self.logger.warning(f"Submissions directory not found: {base_dir}")
+        # Try several possible base directories
+        possible_paths = [
+            "./data/reddit/submissions",  # Relative to where script is run
+            "data/reddit/submissions",    # Alternative relative path
+            os.path.join(os.path.dirname(__file__), "..", "data", "reddit", "submissions"),  # From script location
+            os.path.abspath(os.path.join("data", "reddit", "submissions"))  # Absolute path
+        ]
+        
+        base_dir = None
+        for path in possible_paths:
+            if os.path.exists(path):
+                base_dir = path
+                self.logger.info(f"Found Reddit data directory at: {path}")
+                break
+        
+        if not base_dir:
+            self.logger.warning(f"Reddit submissions directory not found. Tried: {possible_paths}")
             return pd.DataFrame(columns=['id','title','selftext','created_utc','score','num_comments','url'])
 
         # Process all available files matching the pattern 'RS_YYYY-MM.zst'
         # Starting from 2023-12 to 2024-12
+        file_count = 0
         for year in [2023, 2024]:
             start_month = 12 if year == 2023 else 1
             end_month = 12
             
             for month in range(start_month, end_month + 1):
+                # Try with underscore (RS_2024-01.zst)
                 file_pattern = f"RS_{year}-{month:02d}.zst"
                 file_path = os.path.join(base_dir, file_pattern)
                 
+                # If not found, try without underscore (RS 2024-01.zst)
                 if not os.path.exists(file_path):
-                    self.logger.warning(f"File not found: {file_path}")
+                    file_pattern = f"RS {year}-{month:02d}.zst"
+                    file_path = os.path.join(base_dir, file_pattern)
+                
+                if not os.path.exists(file_path):
+                    self.logger.debug(f"Reddit data file not found: {file_path}")
                     continue
 
-                self.logger.info(f"Processing Reddit submissions from {year}-{month:02d}")
+                file_count += 1
+                self.logger.info(f"Processing Reddit submissions from {file_pattern}")
                 try:
                     # Stream-decompress and read JSON lines one by one
                     dctx = zstd.ZstdDecompressor()
@@ -420,6 +477,8 @@ class DataProcessor:
                 except Exception as e:
                     self.logger.error(f"Error processing file {file_path}: {e}")
 
+        self.logger.info(f"Processed {file_count} Reddit data files")
+        
         # Build final DataFrame
         df = pd.DataFrame(records)
         if not df.empty:

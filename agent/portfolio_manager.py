@@ -24,7 +24,7 @@ class PortfolioManager:
         initial_capital: float = 100000.0,
         freq: str = 'B',
         transaction_cost: float = 0.001,
-        output_dir: str = 'agent/output'
+        output_dir: str = 'output'
     ):
         """
         Initialize portfolio manager.
@@ -711,7 +711,7 @@ class PortfolioManager:
         
         # Create Gradio interface
         with gr.Blocks(title="Sentiment Contribution Analysis") as dashboard:
-            gr.Markdown(f"# Sentiment Contribution Analysis\n### Technology Stock(s): {', '.join(config['tickers'])}")
+            gr.Markdown(f"# Sentiment Contribution Analysis\n### Technology Stock(s): {', '.join(config.get('tickers', ['Stock']))}")
             
             with gr.Row():
                 with gr.Column():
@@ -720,8 +720,8 @@ class PortfolioManager:
                 with gr.Column():
                     gr.Markdown(f"""
                     ## Analysis Parameters
-                    - Start Date: {config['start_date']}
-                    - End Date: {config['end_date']}
+                    - Start Date: {config.get('start_date', 'N/A')}
+                    - End Date: {config.get('end_date', 'N/A')}
                     - Initial Capital: ${config.get('initial_capital', 100000.0)}
                     - Reddit Subreddit: {config.get('reddit_subreddit', 'CryptoCurrency')}
                     - Sentiment Weight: {config.get('sentiment_weight', 0.6)}
@@ -771,9 +771,13 @@ class PortfolioManager:
             return self.create_sentiment_comparison_dashboard(results, config)
         
         # Extract data from results
-        portfolio_df = results['portfolio']
-        metrics = results['metrics']
-        orders_df = results['orders']
+        portfolio_df = results.get('portfolio')
+        if portfolio_df is None:
+            self.logger.error("No portfolio data found in results")
+            return gr.Blocks(title="Error")
+            
+        metrics = results.get('metrics', {})
+        orders_df = results.get('orders', pd.DataFrame())
         sentiment_df = results.get('sentiment', pd.DataFrame())
         
         # Dashboard components
@@ -797,6 +801,12 @@ class PortfolioManager:
             return fig
         
         def plot_returns_histogram():
+            if 'returns' not in portfolio_df.columns:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, "Returns data not available", 
+                     horizontalalignment='center', verticalalignment='center')
+                return fig
+                
             fig, ax = plt.subplots(figsize=(10, 6))
             portfolio_df['returns'].hist(bins=30, ax=ax)
             ax.set_title('Returns Distribution')
@@ -806,17 +816,26 @@ class PortfolioManager:
             return fig
         
         def plot_trades():
+            if orders_df.empty or 'order' not in orders_df.columns:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, "Trade data not available", 
+                     horizontalalignment='center', verticalalignment='center')
+                return fig
+                
             fig, ax = plt.subplots(figsize=(10, 6))
             # Plot price
-            ax.plot(orders_df.index, orders_df['price'], color='gray', alpha=0.7)
+            if 'price' in orders_df.columns:
+                ax.plot(orders_df.index, orders_df['price'], color='gray', alpha=0.7)
             
             # Plot buy points
             buys = orders_df[orders_df['order'] > 0]
-            ax.scatter(buys.index, buys['price'], marker='^', color='green', s=100, label='Buy')
+            if not buys.empty and 'price' in buys.columns:
+                ax.scatter(buys.index, buys['price'], marker='^', color='green', s=100, label='Buy')
             
             # Plot sell points
             sells = orders_df[orders_df['order'] < 0]
-            ax.scatter(sells.index, sells['price'], marker='v', color='red', s=100, label='Sell')
+            if not sells.empty and 'price' in sells.columns:
+                ax.scatter(sells.index, sells['price'], marker='v', color='red', s=100, label='Sell')
             
             ax.set_title('Trade Signals')
             ax.set_xlabel('Date')
@@ -830,6 +849,12 @@ class PortfolioManager:
             if sentiment_df.empty or 'avg_compound' not in sentiment_df.columns:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.text(0.5, 0.5, "No sentiment data available", 
+                       horizontalalignment='center', verticalalignment='center')
+                return fig
+            
+            if orders_df.empty or 'price' not in orders_df.columns:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, "No price data available", 
                        horizontalalignment='center', verticalalignment='center')
                 return fig
             
@@ -857,10 +882,12 @@ class PortfolioManager:
             
             # Add buy/sell points
             buys = orders_df[orders_df['order'] > 0]
-            ax1.scatter(buys.index, buys['price'], marker='^', color='green', s=100, label='Buy')
+            if not buys.empty:
+                ax1.scatter(buys.index, buys['price'], marker='^', color='green', s=100, label='Buy')
             
             sells = orders_df[orders_df['order'] < 0]
-            ax1.scatter(sells.index, sells['price'], marker='v', color='red', s=100, label='Sell')
+            if not sells.empty:
+                ax1.scatter(sells.index, sells['price'], marker='v', color='red', s=100, label='Sell')
             
             ax1.legend(loc='upper left')
             fig.tight_layout()
@@ -869,6 +896,12 @@ class PortfolioManager:
             return fig
         
         def get_metrics_table():
+            if not metrics:
+                return pd.DataFrame({
+                    'Metric': ['No metrics data available'],
+                    'Value': ['']
+                })
+                
             metrics_df = pd.DataFrame({
                 'Metric': [
                     'Total Return',
@@ -879,10 +912,10 @@ class PortfolioManager:
                     'Number of Trades'
                 ],
                 'Value': [
-                    f"{metrics['total_return'] * 100:.2f}%",
+                    f"{metrics.get('total_return', 0) * 100:.2f}%",
                     f"{metrics.get('ann_return', 0) * 100:.2f}%",
-                    f"{metrics['sharpe_ratio']:.2f}",
-                    f"{metrics['max_drawdown'] * 100:.2f}%",
+                    f"{metrics.get('sharpe_ratio', 0):.2f}",
+                    f"{metrics.get('max_drawdown', 0) * 100:.2f}%",
                     f"{metrics.get('win_rate', 0) * 100:.2f}%",
                     f"{metrics.get('n_trades', 0):.0f}"
                 ]
@@ -918,7 +951,7 @@ class PortfolioManager:
         # Create Gradio interface
         title = "Crypto-Sentiment Trading Dashboard"
         tickers = config.get('tickers', ['Stock'])
-        ticker_str = ', '.join(tickers)
+        ticker_str = ', '.join(tickers) if tickers else 'Stock'
         
         with gr.Blocks(title=title) as dashboard:
             gr.Markdown(f"# {title}\n### Technology Stock(s): {ticker_str}")
@@ -963,31 +996,76 @@ class PortfolioManager:
             gr.Plot(plot_trades)
             
             gr.Markdown("## Recent Trades")
-            trades = orders_df[orders_df['order'] != 0].tail(10)
-            trades_display = trades.reset_index()
-            
-            # Adapt column names based on what's available
-            display_cols = ['index', 'order', 'price']
-            new_names = ['Date', 'Order', 'Price']
-            
-            # Add sentiment column if available
-            if 'sentiment' in trades_display.columns:
-                display_cols.append('sentiment')
-                new_names.append('Sentiment')
+            # Get non-zero trades
+            trades = orders_df[orders_df['order'] != 0].tail(10) if 'order' in orders_df.columns else pd.DataFrame()
+
+            # Check if we have any trades to display
+            if trades.empty:
+                gr.Markdown("No trades were executed in this period.")
+            else:
+                # Reset index safely
+                trades_display = trades.reset_index()
                 
-            trades_display = trades_display[display_cols]
-            trades_display.columns = new_names
-            
-            # Format date and add trade type
-            trades_display['Date'] = pd.to_datetime(trades_display['Date']).dt.strftime('%Y-%m-%d')
-            trades_display['Type'] = trades_display['Order'].apply(lambda x: 'Buy' if x > 0 else 'Sell')
-            
-            # Show dataframe
-            final_cols = ['Date', 'Type', 'Price']
-            if 'Sentiment' in trades_display.columns:
-                final_cols.append('Sentiment')
+                # Check what columns we have available
+                available_cols = trades_display.columns.tolist()
                 
-            gr.Dataframe(trades_display[final_cols])
+                # Map expected column names to available ones
+                col_mapping = {}
+                
+                # Handle the index column (typically contains dates)
+                if 'index' in available_cols:
+                    col_mapping['Date'] = 'index'
+                elif trades_display.index.name and trades_display.index.name in available_cols:
+                    col_mapping['Date'] = trades_display.index.name
+                else:
+                    # Use the first column as date if it looks like a date
+                    first_col = available_cols[0]
+                    if pd.api.types.is_datetime64_any_dtype(trades_display[first_col]):
+                        col_mapping['Date'] = first_col
+                
+                # Handle order and price columns
+                if 'order' in available_cols:
+                    col_mapping['Order'] = 'order'
+                
+                if 'price' in available_cols:
+                    col_mapping['Price'] = 'price'
+                
+                # Handle sentiment if available
+                if 'sentiment' in available_cols:
+                    col_mapping['Sentiment'] = 'sentiment'
+                
+                # Create display columns list from what's available
+                display_cols = []
+                for display_name, source_col in col_mapping.items():
+                    if source_col in available_cols:
+                        display_cols.append(source_col)
+                
+                if display_cols:
+                    # Extract only available columns
+                    trades_display = trades_display[display_cols]
+                    
+                    # Rename to friendly display names
+                    rename_map = {source_col: display_name 
+                                 for display_name, source_col in col_mapping.items()
+                                 if source_col in display_cols}
+                    trades_display = trades_display.rename(columns=rename_map)
+                    
+                    # Format date and add trade type
+                    if 'Date' in trades_display.columns:
+                        trades_display['Date'] = pd.to_datetime(trades_display['Date']).dt.strftime('%Y-%m-%d')
+                    
+                    if 'Order' in trades_display.columns:
+                        trades_display['Type'] = trades_display['Order'].apply(lambda x: 'Buy' if x > 0 else 'Sell')
+                    
+                    # Show dataframe
+                    final_cols = [col for col in ['Date', 'Type', 'Price', 'Sentiment'] if col in trades_display.columns]
+                    
+                    if final_cols:
+                        gr.Dataframe(trades_display[final_cols])
+                    else:
+                        gr.Markdown("Trade data available but no displayable columns found.")
+                else:
+                    gr.Markdown("No displayable trade data available.")
             
         return dashboard
 
