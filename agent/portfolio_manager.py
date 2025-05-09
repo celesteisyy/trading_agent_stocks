@@ -24,7 +24,7 @@ class PortfolioManager:
         initial_capital: float = 100000.0,
         freq: str = 'B',
         transaction_cost: float = 0.001,
-        output_dir: str = 'output'
+        output_dir: str = 'agent/output'
     ):
         """
         Initialize portfolio manager.
