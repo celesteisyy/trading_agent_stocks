@@ -41,8 +41,7 @@ Since we often get fellows asking about the detailed working logic of this multi
 ├── portfolio_manager.py        # Backtesting and portfolio management
 ├── tradingsystem.py            # High-level orchestration and execution
 │
-├── data/                       # Raw and example data, noted that this will not show in repo because of file limit
-│   ├── reddit/submissions/     # Reddit submissions stored as .zst files
+├── data/                       # Raw and example data
 │   ├── AAPL.csv                # Sample stock price data
 │   └── GSPC.csv                # Sample index price data
 │
@@ -56,6 +55,12 @@ Since we often get fellows asking about the detailed working logic of this multi
 │
 ├── .gitignore
 └── LICENSE
+```
+
+```
+Note:
+The data/reddit/submissions/ folder (monthly .zst archives) is not included in this repository due to file‑size limits.
+Please download those Reddit submission files separately (e.g. from the official archive) and place them under data/reddit/submissions/ before running the pipeline.
 ```
 
 ## Quick Installation
