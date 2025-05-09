@@ -2,6 +2,33 @@
 
 **Crypto-Sentiment Trading System** is a modular python project that uses Reddit sentiment on r/CryptoCurrency together with technical indicators, macroeconomic and DeFi data to generate and backtest trading strategies on S&P 500 technology stocks.
 
+## Overall Workflow
+
+> Since we are frequently asked about the workflow behind our code implementation, we provide a simple diagram here for better understanding. :)
+
+```mermaid
+flowchart TD
+    A[Data Collection and Preprocessing] --> B[Sentiment Analysis]
+    A --> C[Feature Engineering]
+    B --> C
+    C --> D[Prediction Modeling - GRU]
+    D --> E[Trading Signal Generation and Combination]
+    E --> F[Portfolio Simulation and Performance Evaluation]
+    F --> G[A/B Testing and Sentiment Contribution Analysis]
+    G --> H[Visualization and Reporting]
+
+    style A fill:#B3E5FC,stroke:#333,stroke-width:1px
+    style B fill:#FFE082,stroke:#333,stroke-width:1px
+    style C fill:#AED581,stroke:#333,stroke-width:1px
+    style D fill:#9575CD,stroke:#333,stroke-width:1px
+    style E fill:#4DB6AC,stroke:#333,stroke-width:1px
+    style F fill:#FF8A65,stroke:#333,stroke-width:1px
+    style G fill:#FFD54F,stroke:#333,stroke-width:1px
+    style H fill:#81D4FA,stroke:#333,stroke-width:1px
+```
+
+
+
 ## Installation
 1. Clone repository and enter:
    ```bash
