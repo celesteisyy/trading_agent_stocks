@@ -26,7 +26,8 @@ flowchart TD
 
 ## Installation
 1. Clone repository and enter:
-   ```bash
+
+```bash
 git clone <repo-url>
 cd crypto-sentiment-trading
 ```  
