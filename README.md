@@ -60,7 +60,6 @@ FMP_API_KEY=...
 ```
 ├── main.py                  # System entry point
 ├── fin580.env.example       # Example environment file
-├── README.md                # This document
 ├── requirements.txt         # Python dependencies
 
 ├── data_processor.py        # Loads and preprocesses price, macro, DeFi, Reddit data
