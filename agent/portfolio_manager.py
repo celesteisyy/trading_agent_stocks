@@ -585,7 +585,7 @@ class PortfolioManager:
             if sentiment_df.empty or 'avg_compound' not in sentiment_df.columns:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.text(0.5, 0.5, "No sentiment data available", 
-                       horizontalalignment='center', verticalalignment='center')
+                    horizontalalignment='center', verticalalignment='center')
                 return fig
             
             # Calculate return difference
@@ -624,7 +624,7 @@ class PortfolioManager:
             if not sentiment_analysis or 'period_analysis' not in sentiment_analysis:
                 fig, ax = plt.subplots(figsize=(10, 6))
                 ax.text(0.5, 0.5, "Period analysis not available", 
-                       horizontalalignment='center', verticalalignment='center')
+                    horizontalalignment='center', verticalalignment='center')
                 return fig
             
             periods = sentiment_analysis['period_analysis']
@@ -709,6 +709,82 @@ class PortfolioManager:
                 columns={'date': 'Date', 'action': 'Action', 'price': 'Price', 'sentiment': 'Sentiment'}
             )
         
+        def plot_trades_with_signals():
+            # Use orders data from the sentiment-enhanced strategy
+            if 'orders' not in results or results['orders'].empty:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, "Trade data not available", 
+                    horizontalalignment='center', verticalalignment='center')
+                return fig
+            
+            orders_df = results['orders']
+            
+            if 'order' not in orders_df.columns or 'price' not in orders_df.columns:
+                fig, ax = plt.subplots(figsize=(10, 6))
+                ax.text(0.5, 0.5, "Order data missing required columns", 
+                    horizontalalignment='center', verticalalignment='center')
+                return fig
+            
+            fig, ax = plt.subplots(figsize=(12, 7))
+            
+            # Plot price trend
+            ax.plot(orders_df.index, orders_df['price'], color='gray', alpha=0.7, label='Price')
+            
+            # Plot buy points
+            buys = orders_df[orders_df['order'] > 0]
+            if not buys.empty:
+                ax.scatter(buys.index, buys['price'], marker='^', color='green', s=120, label='Buy')
+                
+                # Optional: Add labels for buy points
+                for idx, row in buys.iterrows():
+                    ax.annotate(f"{idx.strftime('%m-%d')}", 
+                            (idx, row['price']), 
+                            textcoords="offset points",
+                            xytext=(0,10), 
+                            ha='center',
+                            fontsize=9)
+            
+            # Plot sell points
+            sells = orders_df[orders_df['order'] < 0]
+            if not sells.empty:
+                ax.scatter(sells.index, sells['price'], marker='v', color='red', s=120, label='Sell')
+                
+                # Optional: Add labels for sell points
+                for idx, row in sells.iterrows():
+                    ax.annotate(f"{idx.strftime('%m-%d')}", 
+                            (idx, row['price']), 
+                            textcoords="offset points",
+                            xytext=(0,-15), 
+                            ha='center',
+                            fontsize=9)
+            
+            # If sentiment data exists, add secondary axis for sentiment
+            if 'sentiment' in results and not results['sentiment'].empty and 'avg_compound' in results['sentiment'].columns:
+                sentiment_df = results['sentiment']
+                ax2 = ax.twinx()
+                ax2.plot(sentiment_df.index, sentiment_df['avg_compound'], color='purple', alpha=0.6, label='Sentiment')
+                ax2.set_ylabel('Sentiment Score', color='purple')
+                ax2.tick_params(axis='y', labelcolor='purple')
+                
+                # Merge legends
+                lines1, labels1 = ax.get_legend_handles_labels()
+                lines2, labels2 = ax2.get_legend_handles_labels()
+                ax.legend(lines1 + lines2, labels1 + labels2, loc='upper left')
+            else:
+                ax.legend(loc='upper left')
+            
+            ax.set_title('Price Trend with Trading Signals')
+            ax.set_xlabel('Date')
+            ax.set_ylabel('Price')
+            ax.grid(True)
+            
+            # Display trade statistics
+            buy_count = len(buys)
+            sell_count = len(sells)
+            fig.text(0.02, 0.02, f'Total Buy Signals: {buy_count} | Total Sell Signals: {sell_count}', fontsize=10)
+            
+            return fig
+        
         # Create Gradio interface
         with gr.Blocks(title="Sentiment Contribution Analysis") as dashboard:
             gr.Markdown(f"# Sentiment Contribution Analysis\n### Technology Stock(s): {', '.join(config.get('tickers', ['Stock']))}")
@@ -727,6 +803,10 @@ class PortfolioManager:
                     - Sentiment Weight: {config.get('sentiment_weight', 0.6)}
                     - Technical Weight: {config.get('technical_weight', 0.4)}
                     """)
+            
+            # Add Price Trend with Trading Signals - Make this more prominent
+            gr.Markdown("## Price Trend with Trading Signals")
+            gr.Plot(plot_trades_with_signals)
             
             gr.Markdown("## Equity Curves Comparison")
             gr.Plot(plot_equity_comparison)
@@ -750,7 +830,7 @@ class PortfolioManager:
             gr.Dataframe(get_sentiment_driven_trades())
             
         return dashboard
-    
+        
     def create_dashboard(
         self,
         results: Dict[str, pd.DataFrame],
@@ -982,6 +1062,9 @@ class PortfolioManager:
             # Sentiment and Price Correlation
             gr.Markdown("## Reddit Sentiment vs. Stock Price")
             gr.Plot(plot_sentiment_vs_price)
+
+            gr.Markdown("## Price Trend with Trading Signals")
+            gr.Plot(plot_trades_with_signals)
             
             with gr.Row():
                 with gr.Column():
@@ -1066,6 +1149,7 @@ class PortfolioManager:
                         gr.Markdown("Trade data available but no displayable columns found.")
                 else:
                     gr.Markdown("No displayable trade data available.")
+
             
         return dashboard
 

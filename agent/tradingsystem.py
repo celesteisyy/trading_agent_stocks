@@ -352,7 +352,7 @@ class TradingSystem:
         }
         
         dashboard = portfolio_manager.create_dashboard(results, self.config)
-        dashboard.launch(share=False)
+        dashboard.launch(share=True)
         
         return results
 
