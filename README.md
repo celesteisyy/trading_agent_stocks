@@ -105,6 +105,8 @@ This will:
     Normalizes these features across the entire dataset.
 
     Forms sequences of length seq_len (default 60) of these normalized feature vectors, and sets the target y to be the raw (unnormalized) close price at i+seq_len—i.e., the very next day’s closing price .
+ - For Datasets, Due to GitHub restrictions, our dataset link posted as below:
+   https://academictorrents.com/details/ba051999301b109eab37d16f027b3f49ade2de13/comments 
 
 ---
 *Developed by Celeste (Yueying) Huang & Stella (Lechen) Gong*
